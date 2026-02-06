@@ -1,0 +1,454 @@
+import json
+import logging
+from typing import Iterable, List, Optional, Set, Tuple
+
+from shiny import ui
+
+from config import CHOICES
+from config import ONE_WAY_DASH
+from data_processing import polyline_color
+from config import MAP_COLORS
+
+
+GRID_PAGE_SIZE = 10
+logger = logging.getLogger("healthy_streets_shinypy")
+
+
+def safe_guid(guid: object) -> str:
+    return str(guid).replace("-", "_")
+
+
+def grid_input_ids(guid: object) -> dict:
+    sg = safe_guid(guid)
+    return {
+        "name": f"grid_name_{sg}",
+        "id": f"grid_id_{sg}",
+        "oneway": f"grid_oneway_{sg}",
+        "flow": f"grid_flow_{sg}",
+        "protection": f"grid_protection_{sg}",
+        "owner": f"grid_owner_{sg}",
+        "audit_sv": f"grid_audit_sv_{sg}",
+        "audit_ip": f"grid_audit_ip_{sg}",
+        "rejected": f"grid_rejected_{sg}",
+    }
+
+
+def _route_minimap(
+    coords: Optional[List[Tuple[float, float]]],
+    color: str,
+    opacity: float,
+    dash_array: Optional[str],
+    guid: Optional[str] = None,
+    width: int = 120,
+    height: int = 80,
+):
+    if not coords:
+        return ui.tags.div("No geometry", class_="hss-grid-map-empty")
+    logger.info("Grid minimap attrs color=%s opacity=%s dash=%s coords=%s", color, opacity, dash_array, bool(coords))
+    return ui.tags.div(
+        class_="hss-grid-map",
+        style=f"width:{width}px;height:{height}px;",
+        **{
+            "data-coords": json.dumps(coords),
+            "data-color": color,
+            "data-opacity": f"{opacity:.2f}",
+            "data-dash": dash_array or "",
+            "data-guid": guid or "",
+        },
+    )
+
+
+def build_grid_panel():
+    return ui.nav_panel(
+        "Grid",
+        ui.tags.style(
+            """
+            .hss-grid-controls {
+                display: flex;
+                gap: 0.75rem;
+                align-items: center;
+                margin-bottom: 0.5rem;
+            }
+            .hss-grid-map {
+                border: 1px solid #d7dbe0;
+                border-radius: 6px;
+                background: #f8f9fa;
+                position: relative;
+                z-index: 1;
+            }
+            .hss-grid-map-empty {
+                width: 120px;
+                height: 80px;
+                border: 1px solid #d7dbe0;
+                border-radius: 6px;
+                background: #f8f9fa;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 12px;
+                color: #666;
+            }
+            .hss-grid-table td, .hss-grid-table th {
+                vertical-align: top;
+                padding: 0.35rem;
+            }
+            .hss-grid-table .form-control,
+            .hss-grid-table .form-select {
+                font-size: 0.85rem;
+                padding: 0.2rem 0.4rem;
+            }
+            .hss-grid-table th {
+                font-size: 0.9rem;
+            }
+            .hss-grid-table .shiny-input-container {
+                margin-bottom: 0.2rem !important;
+            }
+            .hss-grid-audit .shiny-input-container {
+                margin-bottom: 0.1rem !important;
+            }
+            .hss-grid-audit label {
+                font-size: 12px;
+            }
+            .hss-grid-stack {
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+            }
+            .hss-grid-action {
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+                align-items: flex-start;
+            }
+            .hss-grid-map-wrap {
+                position: relative;
+                display: inline-block;
+            }
+            .hss-grid-goto {
+                position: absolute;
+                top: 4px;
+                right: 4px;
+                width: 24px;
+                height: 24px;
+                padding: 0;
+                border-radius: 6px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 12px;
+                z-index: 5;
+                background: #ffffff;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+            }
+            .hss-grid-action .btn {
+                padding: 0.2rem 0.5rem;
+                font-size: 12px;
+            }
+            .hss-grid-table-wrap {
+                overflow-x: auto;
+            }
+            .hss-grid-table th:first-child,
+            .hss-grid-table td:first-child {
+                position: sticky;
+                left: 0;
+                background: #fff;
+                z-index: 1;
+            }
+            .hss-grid-table th:first-child {
+                z-index: 2;
+            }
+            """
+        ),
+        ui.tags.script(
+            """
+            function hssEnsureLeaflet(cb) {
+                if (window.L) {
+                    cb();
+                    return;
+                }
+                if (window.__hssLeafletLoading) {
+                    const timer = setInterval(function() {
+                        if (window.L) {
+                            clearInterval(timer);
+                            cb();
+                        }
+                    }, 50);
+                    return;
+                }
+                window.__hssLeafletLoading = true;
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+                document.head.appendChild(link);
+                const script = document.createElement('script');
+                script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+                script.onload = function() { cb(); };
+                document.head.appendChild(script);
+            }
+
+            function hssInitMiniMaps(root) {
+                hssEnsureLeaflet(function() {
+                    const nodes = (root || document).querySelectorAll('.hss-grid-map');
+                    nodes.forEach(function(node) {
+                        const raw = node.dataset.coords;
+                        if (!raw) return;
+                        const coords = JSON.parse(raw);
+                        if (!coords || !coords.length) return;
+                        const strokeColor = node.dataset.color || '#1c42d7';
+                        const strokeOpacity = node.dataset.opacity ? parseFloat(node.dataset.opacity) : 0.9;
+                        const dash = node.dataset.dash || null;
+                        console.log('HSS grid minimap style', { color: strokeColor, opacity: strokeOpacity, dash: dash });
+                        const coordsKey = JSON.stringify(coords);
+                        if (node.dataset.hssInit) {
+                            if (node._hssPolyline) {
+                                node._hssPolyline.setStyle({ color: strokeColor, opacity: strokeOpacity, dashArray: dash, weight: 2 });
+                                console.log('HSS grid minimap updated');
+                            }
+                            if (node._hssCoordsKey !== coordsKey && node._hssPolyline) {
+                                node._hssPolyline.setLatLngs(coords);
+                                if (node._hssMap) {
+                                    const bounds = L.latLngBounds(coords);
+                                    node._hssMap.fitBounds(bounds, { padding: [2, 2] });
+                                    const maxZoom = 15;
+                                    if (node._hssMap.getZoom() > maxZoom) {
+                                        node._hssMap.setZoom(maxZoom);
+                                    }
+                                }
+                                node._hssCoordsKey = coordsKey;
+                            }
+                            return;
+                        }
+                        node.dataset.hssInit = '1';
+                        node._hssCoordsKey = coordsKey;
+                        const map = L.map(node, {
+                            attributionControl: false,
+                            zoomControl: false,
+                            dragging: false,
+                            scrollWheelZoom: false,
+                            doubleClickZoom: false,
+                            boxZoom: false,
+                            keyboard: false,
+                            tap: false,
+                        });
+                        node._hssMap = map;
+                        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                            maxZoom: 19,
+                            attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+                        }).addTo(map);
+                        const line = L.polyline(coords, { color: strokeColor, opacity: strokeOpacity, dashArray: dash, weight: 2 }).addTo(map);
+                        node._hssPolyline = line;
+                        console.log('HSS grid minimap created');
+                        const bounds = L.latLngBounds(coords);
+                        map.fitBounds(bounds, { padding: [2, 2] });
+                        const maxZoom = 15;
+                        if (map.getZoom() > maxZoom) {
+                            map.setZoom(maxZoom);
+                        }
+                    });
+                });
+            }
+
+            function hssRefreshMiniMaps() {
+                hssInitMiniMaps(document);
+            }
+
+            document.addEventListener('DOMContentLoaded', function() {
+                hssInitMiniMaps(document);
+                window.hssSetGridPage = function(page) {
+                    if (!window.Shiny || !window.Shiny.setInputValue) return;
+                    window.Shiny.setInputValue('grid_page', page, {priority: 'event'});
+                };
+                document.addEventListener('click', function(ev) {
+                    const btn = ev.target.closest('.hss-grid-btn');
+                    if (!btn) return;
+                    if (!window.Shiny || !window.Shiny.setInputValue) return;
+                    const guid = btn.dataset.guid;
+                    const action = btn.dataset.action;
+                    if (!guid || !action) return;
+                    const payload = { guid: guid, ts: Date.now() };
+                    if (action === 'goto') {
+                        window.Shiny.setInputValue('grid_goto_click', payload, {priority: 'event'});
+                    } else if (action === 'delete') {
+                        window.Shiny.setInputValue('grid_delete_click', payload, {priority: 'event'});
+                    }
+                });
+                if (window.Shiny && window.Shiny.addCustomMessageHandler) {
+                    window.Shiny.addCustomMessageHandler('hss_refresh_minimaps', function(payload) {
+                        console.log('HSS grid: refresh minimaps', payload);
+                        hssRefreshMiniMaps();
+                    });
+                    window.Shiny.addCustomMessageHandler('hss_update_minimap', function(payload) {
+                        console.log('HSS grid: update minimap', payload);
+                        if (!payload || !payload.guid) return;
+                        const node = document.querySelector('.hss-grid-map[data-guid=\"' + payload.guid + '\"]');
+                        if (!node) return;
+                        node.dataset.color = payload.color || node.dataset.color;
+                        node.dataset.opacity = (payload.opacity !== undefined) ? payload.opacity : node.dataset.opacity;
+                        node.dataset.dash = payload.dash || '';
+                        if (node._hssPolyline) {
+                            node._hssPolyline.setStyle({
+                                color: node.dataset.color || '#1c42d7',
+                                opacity: parseFloat(node.dataset.opacity || '0.9'),
+                                dashArray: node.dataset.dash || null,
+                                weight: 2,
+                            });
+                        } else {
+                            hssInitMiniMaps(node);
+                        }
+                    });
+                }
+                const observer = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(m) {
+                        m.addedNodes.forEach(function(node) {
+                            if (node.nodeType !== 1) return;
+                            hssInitMiniMaps(node);
+                        });
+                    });
+                });
+                observer.observe(document.body, { childList: true, subtree: true });
+            });
+            """
+        ),
+        ui.tags.div(
+            ui.output_ui("grid_pager"),
+            ui.output_text("grid_page_info"),
+            class_="hss-grid-controls",
+        ),
+        ui.tags.div(
+            ui.input_numeric("grid_page", "Page", value=1, min=1, step=1),
+            style="display:none;",
+        ),
+        ui.output_ui("grid_view"),
+    )
+
+
+def render_grid(
+    rows,
+    page: int,
+    highlight_guids: Optional[Iterable[str]] = None,
+    highlight_active: bool = False,
+    dim_opacity: float = 0.3,
+) -> ui.Tag:
+    start = max(page - 1, 0) * GRID_PAGE_SIZE
+    end = start + GRID_PAGE_SIZE
+    slice_rows = rows.iloc[start:end]
+    highlight_set: Set[str] = set(highlight_guids or [])
+
+    rows_ui = []
+    for _, row in slice_rows.iterrows():
+        guid = row.get("guid", "")
+        safe_guid_val = safe_guid(guid)
+        coords = row.get("_coords")
+        base_color = polyline_color(row, MAP_COLORS)
+        dash_array = ONE_WAY_DASH if row.get("OneWay") == "OneWay" else None
+        opacity = 0.9
+        if highlight_active and guid and guid not in highlight_set:
+            opacity = dim_opacity
+        rows_ui.append(
+            ui.tags.tr(
+                ui.tags.td(
+                    ui.tags.div(
+                        ui.tags.div(
+                            _route_minimap(coords, base_color, opacity, dash_array, str(guid)),
+                            ui.tags.button(
+                                "↗",
+                                title="Go to map",
+                                class_="btn btn-sm btn-outline-primary hss-grid-btn hss-grid-goto",
+                                **{"data-guid": str(guid), "data-action": "goto"},
+                            ),
+                            class_="hss-grid-map-wrap",
+                        ),
+                        class_="hss-grid-action",
+                    )
+                ),
+                ui.tags.td(
+                    ui.tags.div(
+                        ui.input_text(f"grid_name_{safe_guid_val}", "", value=str(row.get("name", ""))),
+                        ui.input_text(f"grid_id_{safe_guid_val}", "", value=str(row.get("id", ""))),
+                        class_="hss-grid-stack",
+                    )
+                ),
+                ui.tags.td(
+                    ui.tags.div(
+                        ui.input_select(
+                            f"grid_oneway_{safe_guid_val}",
+                            "",
+                            choices=["TwoWay", "OneWay"],
+                            selected=row.get("OneWay", "TwoWay") or "TwoWay",
+                        ),
+                        ui.input_select(
+                            f"grid_flow_{safe_guid_val}",
+                            "",
+                            choices=list(CHOICES["flow"].values()),
+                            selected=row.get("Flow", "") or "",
+                        ),
+                        class_="hss-grid-stack",
+                    )
+                ),
+                ui.tags.td(
+                    ui.tags.div(
+                        ui.input_select(
+                            f"grid_protection_{safe_guid_val}",
+                            "",
+                            choices=list(CHOICES["protection"].values()),
+                            selected=row.get("Protection", "") or "",
+                        ),
+                        ui.input_select(
+                            f"grid_owner_{safe_guid_val}",
+                            "",
+                            choices=list(CHOICES["ownership"].values()),
+                            selected=row.get("Ownership", "") or "",
+                        ),
+                        class_="hss-grid-stack",
+                    )
+                ),
+                ui.tags.td(
+                    ui.tags.div(
+                        ui.input_checkbox(
+                            f"grid_audit_sv_{safe_guid_val}",
+                            "Audited StreetView",
+                            value=bool(row.get("AuditedStreetView", False)),
+                        ),
+                        ui.input_checkbox(
+                            f"grid_audit_ip_{safe_guid_val}",
+                            "Audited In Person",
+                            value=bool(row.get("AuditedInPerson", False)),
+                        ),
+                        ui.input_checkbox(
+                            f"grid_rejected_{safe_guid_val}",
+                            "Rejected",
+                            value=bool(row.get("Rejected", False)),
+                        ),
+                        class_="hss-grid-audit",
+                    )
+                ),
+                ui.tags.td(
+                    ui.tags.button(
+                        "Delete",
+                        class_="btn btn-sm btn-danger hss-grid-btn",
+                        **{"data-guid": str(guid), "data-action": "delete"},
+                    )
+                ),
+            )
+        )
+
+    if not rows_ui:
+        return ui.tags.div("No routes to display.")
+
+    return ui.tags.div(
+        ui.tags.table(
+            ui.tags.thead(
+                ui.tags.tr(
+                    ui.tags.th("Map"),
+                    ui.tags.th("Name / Id"),
+                    ui.tags.th("Direction / Flow"),
+                    ui.tags.th("Protection / Ownership"),
+                    ui.tags.th("Audited / Rejected"),
+                    ui.tags.th("Delete"),
+                )
+            ),
+            ui.tags.tbody(*rows_ui),
+            class_="table table-sm table-striped hss-grid-table",
+        ),
+        class_="hss-grid-table-wrap",
+    )
