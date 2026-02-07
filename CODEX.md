@@ -24,6 +24,7 @@
 - Preferred wording in UI/docs: use “Added / Removed / Changed” (not Created/Deleted/Edited).
 - Always await or `asyncio.create_task()` any `session.send_custom_message(...)` calls to avoid dropped messages and runtime warnings. Prefer a shared helper when adding new message paths.
 - Suggestions tab is intentionally a placeholder for future QA tooling (naming gaps, TfL mismatches, designation checks).
+- Deployment target uses PROJ 8.2.1; keep pyproj pinned to 3.4.x and Python at 3.11.
 
 ## Project Structure
 

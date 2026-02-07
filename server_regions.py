@@ -22,6 +22,7 @@ def register_region_handlers(
     loading_active,
     ensure_loading_modal,
     region_pref_ready,
+    authenticated,
     set_map_state,
     read_region_sheet,
     write_region_sheet,
@@ -33,12 +34,13 @@ def register_region_handlers(
 ):
     @reactive.effect
     def _toggle_controls():
-        disabled = not changes_made.get()
+        is_auth = authenticated.get()
+        disabled = (not is_auth) or (not changes_made.get())
         is_loading = loading_active.get()
         asyncio.create_task(
             session.send_custom_message(
                 "hss_set_disabled",
-                {"id": "region_fieldset", "disabled": changes_made.get() or is_loading},
+                {"id": "region_fieldset", "disabled": (not is_auth) or changes_made.get() or is_loading},
             )
         )
         ui.update_action_button("save", disabled=disabled)
@@ -67,6 +69,10 @@ def register_region_handlers(
 
     @reactive.effect
     async def _load_region():
+        if not authenticated.get():
+            logger.info("Load region blocked: not authenticated")
+            loading_active.set(False)
+            return
         region = input.region()
         if not region:
             logger.info("Load region: no region selected")

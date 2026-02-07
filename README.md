@@ -2,6 +2,18 @@
 
 Python Shiny rewrite of the Healthy Streets editor, modeled after the original R Shiny app.
 
+## Summary
+
+HealthyStreetsShinyPy is a Shiny for Python app for editing London cycle-route segments stored in Google Sheets. It provides:
+
+- Map editing of routes (select, edit metadata, draw new routes, delete, and save back to Sheets)
+- Borough-based loading with access control (name/password + region restrictions)
+- Highlighting and dimming filters (created/edited since, ownership, audited status)
+- Grid view for bulk edits with minimaps, Go‑to‑map, and delete actions
+- Changes view with before/after minimaps, field diffs, and undo actions
+- CycleRoutes and TfL reference layers and auto‑suggestions for designation/ownership
+- Local UI preferences (basemap, highlighting, route style/width, last borough)
+
 ## Run
 
 ```bash
@@ -14,7 +26,7 @@ shiny run --reload app.py
 ## Setup Tips
 
 - Activate the venv: `source .venv/bin/activate`
-- Check Python: `python --version` (3.12+ recommended; 3.14 works with numpy>=2.4)
+- Check Python: `python --version` (Python 3.11 required for pyproj 3.4.x + PROJ 8.2.1 compatibility)
 - Upgrade pip if installs fail: `python -m pip install -U pip setuptools wheel`
 - If Thunderforest tiles don’t appear, ensure `THUNDER_FOREST_KEY` is exported in the same shell before starting Shiny.
 - If Sheets access fails, confirm the service account email is shared on the sheet and that one of the Google credential env vars is set.
@@ -58,6 +70,7 @@ Edits are written back by replacing the entire worksheet, matching the behavior 
 - When creating a new route, the app checks CycleRoutes for overlap and suggests the `Label` as the designation when a close match is found.
 - When creating a new route, the app checks TFL reference layers; if the route is close to a TFL asset it auto-sets `Ownership` to `TFL`.
 - TfL polygon handling avoids Shapely's `MultiPolygon` constructor on Python 3.14 (it errors with Shapely 2.0.4); polygons are built ring-by-ring instead. The lookup logs the matched geometry index for debugging.
+- pyproj is pinned to **3.4.1** to match environments with **PROJ 8.2.1**.
 
 ### CycleRoutes Debug Harness
 

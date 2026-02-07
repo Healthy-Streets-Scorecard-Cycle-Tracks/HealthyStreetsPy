@@ -89,6 +89,11 @@ def server(input, output, session):
 
     @reactive.effect
     def _show_loading_modal():
+        if not AUTO_LOGIN_ENABLED and not authenticated.get():
+            if loading_modal_visible.get():
+                ui.modal_remove()
+                loading_modal_visible.set(False)
+            return
         if loading_active.get():
             if not loading_modal_visible.get():
                 ui.modal_show(
@@ -153,6 +158,7 @@ def server(input, output, session):
             return
         loading_message.set("Loading access table...")
         access_table.set(get_access_table_once())
+        loading_active.set(False)
 
     @reactive.effect
     def _load_borough_shapes():
@@ -435,6 +441,7 @@ def server(input, output, session):
         default_sheet_id=DEFAULT_SHEET_ID,
         logger=logger,
         region_pref_ready=region_pref_ready,
+        authenticated=authenticated,
     )
 
     register_grid_actions(
