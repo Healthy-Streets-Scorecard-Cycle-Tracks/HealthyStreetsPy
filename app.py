@@ -331,18 +331,28 @@ def server(input, output, session):
         map_html_state=map_html_state,
         logger=logger,
     )
+    def _normalize_optional(value) -> str:
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        if value is None:
+            return ""
+        return str(value)
+
     def _payload_from_row(row: pd.Series) -> dict:
         return {
-            "name": str(row.get("name", "")),
-            "designation": str(row.get("Designation", "")),
-            "id": str(row.get("id", "")),
+            "name": _normalize_optional(row.get("name", "")),
+            "designation": _normalize_optional(row.get("Designation", "")),
+            "id": _normalize_optional(row.get("id", "")),
             "description": normalize_linebreaks(row.get("description", "")),
-            "oneway": row.get("OneWay", "TwoWay") or "TwoWay",
-            "flow": row.get("Flow", "") or "",
-            "protection": row.get("Protection", "") or "",
-            "ownership": row.get("Ownership", "") or "",
+            "oneway": _normalize_optional(row.get("OneWay", "TwoWay")) or "TwoWay",
+            "flow": _normalize_optional(row.get("Flow", "")),
+            "protection": _normalize_optional(row.get("Protection", "")),
+            "ownership": _normalize_optional(row.get("Ownership", "")),
             "year_before": "Before" if row.get("YearBuildBeforeFlag", False) else "In",
-            "year_built": str(row.get("YearBuilt", "")),
+            "year_built": _normalize_optional(row.get("YearBuilt", "")),
             "audited_sv": bool(row.get("AuditedStreetView", False)),
             "audited_in_person": bool(row.get("AuditedInPerson", False)),
             "rejected": bool(row.get("Rejected", False)),

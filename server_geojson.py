@@ -173,12 +173,16 @@ def register_geojson_handlers(
         except Exception:
             logger.exception("CycleRoutes lookup failed")
             suggested = None
+        designation_assigned = False
+        ownership_assigned = False
         if suggested and not new_row.get("Designation"):
             new_row["Designation"] = suggested
+            designation_assigned = True
         if not new_row.get("Ownership"):
             try:
                 if suggest_tfl_ownership(clipped_coords):
                     new_row["Ownership"] = "TFL"
+                    ownership_assigned = True
                     logger.info("CycleRoutes: assigned Ownership=TFL based on TFL proximity")
                 else:
                     probe = debug_tfl_probe(clipped_coords, buffer_m=2000.0)
@@ -186,6 +190,16 @@ def register_geojson_handlers(
                         logger.info("TFL lookup probe=%s", probe)
             except Exception:
                 logger.exception("TFL ownership lookup failed")
+        if designation_assigned or ownership_assigned:
+            parts = []
+            if designation_assigned:
+                parts.append("Designation")
+            if ownership_assigned:
+                parts.append("Ownership (TFL)")
+            ui.notification_show(
+                f"Auto-assigned: {', '.join(parts)}",
+                type="message",
+            )
         new_row["_coords"] = clipped_coords
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         data_state.set(df)
