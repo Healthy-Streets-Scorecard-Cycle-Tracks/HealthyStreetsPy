@@ -208,7 +208,21 @@ def diff_fields(before_row, after_row) -> List[Tuple[str, str, str, bool]]:
         after_val = after_row.get(key) if after_row is not None else None
         before_fmt = format_value(key, before_val)
         after_fmt = format_value(key, after_val)
-        changed = before_fmt != after_fmt
+        def _norm(val):
+            try:
+                import pandas as pd
+
+                if pd.isna(val):
+                    return None
+            except Exception:
+                pass
+            if isinstance(val, str):
+                return val.strip()
+            return val
+
+        before_norm = _norm(before_val)
+        after_norm = _norm(after_val)
+        changed = before_norm != after_norm
         diffs.append((label, before_fmt, after_fmt, changed))
     return diffs
 
@@ -231,7 +245,7 @@ def _route_summary(row, prefix: str, *, direction: Optional[str] = None) -> str:
     length_m = int(round(line_length_m(coords))) if coords else 0
     dir_val = direction or (row.get("OneWay") if row is not None else None) or ""
     dir_text = dir_val or "TwoWay"
-    return f"{length_m}m of {dir_text} on {name} {prefix}"
+    return f"\"{name}\" - {length_m}m of {dir_text} - {prefix}"
 
 
 def _route_summary_updated(after_row, changed_labels: Optional[List[str]] = None) -> str:
@@ -244,12 +258,18 @@ def _route_summary_updated(after_row, changed_labels: Optional[List[str]] = None
     dir_text = dir_val or "TwoWay"
     changes = ""
     if changed_labels:
-        max_items = 3
-        trimmed = changed_labels[:max_items]
-        if len(changed_labels) > max_items:
-            trimmed.append(f"+{len(changed_labels) - max_items} more")
-        changes = " - " + " / ".join(trimmed) + " Changed"
-    return f"{length_m}m of {dir_text} on {name}{changes}"
+        if len(changed_labels) <= 3:
+            trimmed = changed_labels
+        else:
+            trimmed = changed_labels[:2]
+            trimmed.append(f"+{len(changed_labels) - 2} more")
+        if len(trimmed) == 1:
+            changes = " - " + trimmed[0] + " Changed"
+        elif len(trimmed) == 2:
+            changes = " - " + " and ".join(trimmed) + " Changed"
+        else:
+            changes = " - " + " / ".join(trimmed) + " Changed"
+    return f"\"{name}\" - {length_m}m of {dir_text}{changes}"
 
 
 def render_changes(
@@ -270,9 +290,11 @@ def render_changes(
     created_cards = []
     removed_cards = []
 
-    def _field_list(diffs):
+    def _field_list(diffs, only_changed: bool = False):
         items = []
         for label, before_val, after_val, changed in diffs:
+            if only_changed and not changed:
+                continue
             if changed:
                 items.append(
                     ui.tags.div(
@@ -308,6 +330,13 @@ def render_changes(
         if (before_coords or []) != (after_coords or []):
             changed_labels = ["Route"] + [label for label in changed_labels if label != "Route"]
         summary_title = _route_summary_updated(after_row, changed_labels)
+        map_changed = False
+        if (before_coords or []) != (after_coords or []):
+            map_changed = True
+        if before_row.get("OneWay") != after_row.get("OneWay"):
+            map_changed = True
+        if bool(before_row.get("Rejected", False)) != bool(after_row.get("Rejected", False)):
+            map_changed = True
         edited_cards.append(
             ui.tags.details(
                 ui.tags.summary(
@@ -354,8 +383,8 @@ def render_changes(
                         ),
                     ),
                     class_="hss-change-maps",
-                ),
-                _field_list(diffs),
+                ) if map_changed else ui.tags.div(),
+                _field_list(diffs, only_changed=True),
                 class_="hss-change-card hss-change-card-changed hss-change-details",
                 open=True,
                 **{"data-change-id": f"changed-{guid}"},

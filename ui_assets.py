@@ -204,6 +204,16 @@ def map_bridge_script() -> ui.Tag:
                     hssSendSelectToIframe(window.hssPendingSelect);
                 }
             });
+
+            const styleControls = document.querySelector('.hss-map-style-controls');
+            if (styleControls) {
+                styleControls.addEventListener('mouseenter', function() {
+                    if (iframe) iframe.style.pointerEvents = 'none';
+                });
+                styleControls.addEventListener('mouseleave', function() {
+                    if (iframe) iframe.style.pointerEvents = 'auto';
+                });
+            }
         }
 
         document.addEventListener('DOMContentLoaded', function() {
@@ -357,6 +367,10 @@ def app_styles() -> ui.Tag:
             border-radius: 8px;
             padding: 4px 6px;
             width: 92px;
+            pointer-events: auto;
+        }
+        .hss-map-style-controls * {
+            pointer-events: auto;
         }
         .hss-map-style-controls .shiny-input-container {
             margin-bottom: 0 !important;
