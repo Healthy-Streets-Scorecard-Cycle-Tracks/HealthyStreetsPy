@@ -105,7 +105,14 @@ def update_history(df: pd.DataFrame, guid: str, user: str, today: Optional[str] 
     today_val = today or today_string()
     line = f"{today_val}: edited by {user or 'unknown'}"
     current = df.loc[df["guid"] == guid, "History"].fillna("").astype(str).values
-    new_history = line if len(current) == 0 or current[0] == "" else f"{line}\n{current[0]}"
+    history_text = current[0] if len(current) else ""
+    lines = [l for l in history_text.splitlines() if l.strip()]
+    if lines and lines[0].strip() == line:
+        new_history = history_text
+    else:
+        # Remove any existing duplicate of the same line before prepending.
+        filtered = [l for l in lines if l.strip() != line]
+        new_history = "\n".join([line] + filtered) if filtered else line
     df.loc[df["guid"] == guid, "History"] = new_history
     df.loc[df["guid"] == guid, "LastEdited"] = today_val
     existing_created = df.loc[df["guid"] == guid, "WhenCreated"].values

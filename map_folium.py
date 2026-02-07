@@ -190,6 +190,11 @@ class ShinyBridge(MacroElement):
                     }
                     layer.off('click');
                     layer.on('click', function(e) {
+                        try {
+                            if (window.L && L.DomEvent && e) {
+                                L.DomEvent.stopPropagation(e);
+                            }
+                        } catch (err) {}
                         var feature = layer.feature;
                         if (!feature || !feature.properties || !feature.properties.guid) {
                             return;
@@ -236,19 +241,11 @@ class ShinyBridge(MacroElement):
                         });
                         layer.on('pm:vertexdragend', function() {
                             console.log('HSS iframe layer pm:vertexdragend', gid);
-                            if (layer.toGeoJSON) {
-                                var payload = { features: [layer.toGeoJSON()] };
-                                console.log('HSS iframe sending edited_geojson (vertexdragend)', payload);
-                                sendMessage("edited_geojson", payload);
-                            }
+                            queueEditedGeoJSON(layer, 'vertexdragend');
                         });
                         layer.on('pm:markerdragend', function() {
                             console.log('HSS iframe layer pm:markerdragend', gid);
-                            if (layer.toGeoJSON) {
-                                var payload = { features: [layer.toGeoJSON()] };
-                                console.log('HSS iframe sending edited_geojson (markerdragend)', payload);
-                                sendMessage("edited_geojson", payload);
-                            }
+                            queueEditedGeoJSON(layer, 'markerdragend');
                         });
                         layer.on('pm:vertexadded', function() {
                             console.log('HSS iframe layer pm:vertexadded', gid);
@@ -313,14 +310,25 @@ class ShinyBridge(MacroElement):
                     return coords.map(function(c) { return L.latLng(c[0], c[1]); });
                 }
 
+                var hssEditTimer = null;
+                var hssEditPayload = null;
+                function queueEditedGeoJSON(layer, source) {
+                    if (!layer || !layer.toGeoJSON) return;
+                    hssEditPayload = { features: [layer.toGeoJSON()] };
+                    if (hssEditTimer) clearTimeout(hssEditTimer);
+                    hssEditTimer = setTimeout(function() {
+                        if (!hssEditPayload) return;
+                        console.log('HSS iframe sending edited_geojson (debounced)', source || 'pm:edit', hssEditPayload);
+                        sendMessage("edited_geojson", hssEditPayload);
+                        hssEditPayload = null;
+                    }, 250);
+                }
+
                 bindLayer(layerGroup);
                 map.on('pm:edit', function(e) {
-                    if (e.layer && e.layer.toGeoJSON) {
-                        console.log('HSS iframe pm:edit', e.layer);
-                        var payload = { features: [e.layer.toGeoJSON()] };
-                        console.log('HSS iframe sending edited_geojson', payload);
-                        sendMessage("edited_geojson", payload);
-                    }
+                    if (!e.layer) return;
+                    console.log('HSS iframe pm:edit', e.layer);
+                    queueEditedGeoJSON(e.layer, 'pm:edit');
                 });
 
                 map.on('pm:create', function(e) {
@@ -396,6 +404,59 @@ class ShinyBridge(MacroElement):
                             }
                             layer.fire('click', { latlng: center });
                         }
+                    }
+                    if (event.data.type === 'clear_selection') {
+                        console.log('HSS iframe clear_selection');
+                        try {
+                            if (window.hssEditingLayer && window.hssEditingLayer.pm) {
+                                window.hssEditingLayer.pm.disable();
+                            }
+                            if (window.hssSelectedLayer && window.hssSelectedLayer.pm) {
+                                window.hssSelectedLayer.pm.disable();
+                            }
+                            if (layerGroup && layerGroup.eachLayer) {
+                                layerGroup.eachLayer(function(l) {
+                                    try {
+                                        if (l && l.pm && l.pm.enabled && l.pm.enabled()) {
+                                            l.pm.disable();
+                                        }
+                                    } catch (err) {}
+                                });
+                            }
+                            if (map && map.pm && map.pm.getGeomanLayers) {
+                                var pmLayers = map.pm.getGeomanLayers();
+                                if (pmLayers && pmLayers.forEach) {
+                                    pmLayers.forEach(function(l) {
+                                        try {
+                                            if (l && l.pm && l.pm.enabled && l.pm.enabled()) {
+                                                l.pm.disable();
+                                            }
+                                        } catch (err) {}
+                                    });
+                                }
+                            }
+                            if (map && map.pm && map.pm.disableGlobalEditMode) {
+                                map.pm.disableGlobalEditMode();
+                            }
+                            if (map && map.pm && map.pm.disableGlobalDragMode) {
+                                map.pm.disableGlobalDragMode();
+                            }
+                            if (map && map.pm && map.pm.disableGlobalRotateMode) {
+                                map.pm.disableGlobalRotateMode();
+                            }
+                            if (map && map.pm && map.pm.disableGlobalRemovalMode) {
+                                map.pm.disableGlobalRemovalMode();
+                            }
+                            if (map && map.pm && map.pm.disableDraw) {
+                                map.pm.disableDraw();
+                            }
+                            if (map && map.pm && map.pm.disableGlobalCutMode) {
+                                map.pm.disableGlobalCutMode();
+                            }
+                        } catch (err) {}
+                        window.hssEditingLayer = null;
+                        window.hssSelectedLayer = null;
+                        resetAllStyles();
                     }
                     if (event.data.type === 'update_style') {
                         var payload = event.data.payload || {};

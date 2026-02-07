@@ -1,4 +1,5 @@
 import time
+import asyncio
 
 from shiny import reactive
 
@@ -13,6 +14,7 @@ def register_selection_handlers(
     update_edit_inputs,
     last_created_guid,
     last_created_time,
+    session,
     logger,
 ):
     @reactive.effect
@@ -43,3 +45,24 @@ def register_selection_handlers(
         if not guid or not snapshot:
             return
         update_edit_inputs(snapshot)
+
+    @reactive.effect
+    @reactive.event(input.map_click)
+    def _clear_selection():
+        try:
+            payload = input.map_click()
+        except Exception:
+            payload = None
+        logger.info("Map click received for clear_selection payload=%s", payload)
+        guid = selected_guid.get()
+        if not guid:
+            logger.info("Map click: no selection to clear")
+            return
+        logger.info("Map background click: clearing selection guid=%s", guid)
+        selected_guid.set(None)
+        selected_snapshot.set(None)
+        try:
+            asyncio.create_task(session.send_custom_message("hss_clear_selection", {}))
+            logger.info("Map background click: sent hss_clear_selection")
+        except Exception:
+            logger.exception("Failed to send clear selection message")

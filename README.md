@@ -43,12 +43,17 @@ Edits are written back by replacing the entire worksheet, matching the behavior 
 - Click a route on the map to load its metadata into the right-hand editor panel.
 - Route edits are applied in-memory; use "Save current borough" to write the full sheet back.
 - Inline geometry editing uses Leaflet Geoman and will update the selected route when edits are made.
+- Preferred wording in UI: use **Added / Removed / Changed** (not Created/Deleted/Edited).
 - New routes are clipped to the current borough on save; if a line crosses the boundary the out-of-borough segments are removed.
 - New routes get a default ID (three-word slug). When Nominatim is enabled, the route name is reverse-geocoded from the first point.
 - Grid actions ("Go to" / "Delete") are handled via custom Shiny messages to avoid reactive loops.
+- The Changes page summarizes created/edited/removed routes with before/after minimaps and field diffs, and includes Go-to-map shortcuts.
+- Changes page includes Undo actions: undo edit (revert to baseline), undo create (remove), undo delete (restore). Undo edit/delete restores History and LastEdited from baseline.
 - Highlighting supports: Created since, Edited since, Owned by, Audited status. Non-highlighted routes are dimmed.
 - The main map supports multiple route color schemes (Default, Neon, Contrast, OCM) and a route width slider; minimaps always use the default palette.
 - The app stores lightweight UI preferences in local browser storage (route style, width, basemap, highlight options, last borough) and restores them on reload.
+- A placeholder Suggestions tab exists for future tooling (naming unnamed routes, TfL mismatch checks, designation candidates/mismatches).
+- Google Sheets calls use exponential backoff on HTTP 429 rate limits (up to ~2 minutes). While retrying, a loading modal and warning toast are shown.
 - Cycle Routes reference data is loaded once at startup from `Helpers/CycleRoutes.json` (source: https://cycling.data.tfl.gov.uk/CycleRoutes/CycleRoutes.json, downloaded 2026-02-06).
 - When creating a new route, the app checks CycleRoutes for overlap and suggests the `Label` as the designation when a close match is found.
 - When creating a new route, the app checks TFL reference layers; if the route is close to a TFL asset it auto-sets `Ownership` to `TFL`.

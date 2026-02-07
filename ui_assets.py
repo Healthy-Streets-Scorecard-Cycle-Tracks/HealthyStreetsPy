@@ -78,7 +78,7 @@ def map_bridge_script() -> ui.Tag:
                 }
                 return;
             }
-            if (['selected_route', 'edited_geojson', 'created_geojson'].includes(type)) {
+            if (['selected_route', 'edited_geojson', 'created_geojson', 'map_click'].includes(type)) {
                 console.log('HSS parent forwarding to Shiny', type);
                 window.Shiny.setInputValue(type, payload, {priority: 'event'});
             }
@@ -135,6 +135,11 @@ def map_bridge_script() -> ui.Tag:
                 const iframe = document.querySelector('iframe');
                 if (!iframe || !iframe.contentWindow) return;
                 iframe.contentWindow.postMessage({ type: 'select_route', payload: payload }, '*');
+            });
+            window.Shiny.addCustomMessageHandler('hss_clear_selection', function(payload) {
+                const iframe = document.querySelector('iframe');
+                if (!iframe || !iframe.contentWindow) return;
+                iframe.contentWindow.postMessage({ type: 'clear_selection', payload: payload || {} }, '*');
             });
             window.Shiny.addCustomMessageHandler('hss_update_style', function(payload) {
                 console.log('HSS parent received hss_update_style', payload);
@@ -217,15 +222,39 @@ def map_bridge_script() -> ui.Tag:
             if (prefs.highlight_owner) hssApplySelectSafe('highlight_owner', prefs.highlight_owner);
             if (prefs.highlight_audit) hssApplySelectSafe('highlight_audit', prefs.highlight_audit);
 
-            const regionValue = prefs.region;
-            if (regionValue) {
+            if (window.Shiny && window.Shiny.setInputValue) {
+                if (prefs.route_scheme) window.Shiny.setInputValue('route_scheme', prefs.route_scheme, {priority: 'event'});
+                if (prefs.route_width !== undefined) window.Shiny.setInputValue('route_width', prefs.route_width, {priority: 'event'});
+                if (prefs.highlight_mode) window.Shiny.setInputValue('highlight_mode', prefs.highlight_mode, {priority: 'event'});
+                if (prefs.highlight_dim !== undefined) window.Shiny.setInputValue('highlight_dim', prefs.highlight_dim, {priority: 'event'});
+                if (prefs.highlight_date) window.Shiny.setInputValue('highlight_date', prefs.highlight_date, {priority: 'event'});
+                if (prefs.highlight_owner) window.Shiny.setInputValue('highlight_owner', prefs.highlight_owner, {priority: 'event'});
+                if (prefs.highlight_audit) window.Shiny.setInputValue('highlight_audit', prefs.highlight_audit, {priority: 'event'});
+            }
+
+            const regionValue = prefs.region || null;
+            (function sendRegionPref(attempt) {
+                if (window.Shiny && window.Shiny.setInputValue) {
+                    window.Shiny.setInputValue('region_pref', regionValue, {priority: 'event'});
+                    return;
+                }
+                if (attempt >= 40) return;
+                setTimeout(function() { sendRegionPref(attempt + 1); }, 50);
+            })(0);
+            if (regionValue && !window.hssRegionPrefApplied) {
+                window.hssRegionPrefApplied = false;
                 const regionObserver = new MutationObserver(function() {
+                    if (window.hssRegionPrefApplied) {
+                        regionObserver.disconnect();
+                        return;
+                    }
                     const el = document.getElementById('region');
                     if (!el || el.dataset.hssPrefApplied === '1') return;
                     const options = Array.from(el.options || []).map(opt => opt.value);
                     if (options.includes(regionValue)) {
                         hssApplyInputValue('region', regionValue);
                         el.dataset.hssPrefApplied = '1';
+                        window.hssRegionPrefApplied = true;
                         regionObserver.disconnect();
                     }
                 });

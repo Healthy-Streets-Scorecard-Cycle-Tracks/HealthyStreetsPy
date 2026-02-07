@@ -279,7 +279,7 @@ def debug_tfl_bbox(coords: List[Tuple[float, float]]) -> Optional[dict]:
 def debug_tfl_probe(coords: List[Tuple[float, float]], buffer_m: float = 2000.0) -> Optional[dict]:
     if not coords or LineString is None or Point is None:
         return None
-    tree, geoms, project = _ensure_cache()
+    tree, geoms, project, _ = _ensure_cache()
     if tree is None:
         return None
     try:

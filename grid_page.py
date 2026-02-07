@@ -4,7 +4,7 @@ from typing import Iterable, List, Optional, Set, Tuple
 
 from shiny import ui
 
-from config import CHOICES
+from config import CHOICES, TOOLTIP_TEXT
 from config import ONE_WAY_DASH
 from data_processing import polyline_color
 from config import MAP_COLORS
@@ -22,6 +22,7 @@ def grid_input_ids(guid: object) -> dict:
     sg = safe_guid(guid)
     return {
         "name": f"grid_name_{sg}",
+        "designation": f"grid_designation_{sg}",
         "id": f"grid_id_{sg}",
         "oneway": f"grid_oneway_{sg}",
         "flow": f"grid_flow_{sg}",
@@ -33,7 +34,7 @@ def grid_input_ids(guid: object) -> dict:
     }
 
 
-def _route_minimap(
+def route_minimap(
     coords: Optional[List[Tuple[float, float]]],
     color: str,
     opacity: float,
@@ -41,6 +42,7 @@ def _route_minimap(
     guid: Optional[str] = None,
     width: int = 120,
     height: int = 80,
+    weight: int = 2,
 ):
     if not coords:
         return ui.tags.div("No geometry", class_="hss-grid-map-empty")
@@ -54,13 +56,12 @@ def _route_minimap(
             "data-opacity": f"{opacity:.2f}",
             "data-dash": dash_array or "",
             "data-guid": guid or "",
+            "data-weight": str(weight),
         },
     )
 
-
-def build_grid_panel():
-    return ui.nav_panel(
-        "Grid",
+def grid_assets():
+    return ui.TagList(
         ui.tags.style(
             """
             .hss-grid-controls {
@@ -140,6 +141,12 @@ def build_grid_panel():
                 background: #ffffff;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.15);
             }
+            .hss-grid-badge {
+                position: absolute;
+                top: 4px;
+                left: 4px;
+                z-index: 6;
+            }
             .hss-grid-action .btn {
                 padding: 0.2rem 0.5rem;
                 font-size: 12px;
@@ -156,6 +163,34 @@ def build_grid_panel():
             }
             .hss-grid-table th:first-child {
                 z-index: 2;
+            }
+            .hss-grid-row-added td {
+                background: #f0fdf4;
+            }
+            .hss-grid-row-changed td {
+                background: #fff7ed;
+            }
+            .hss-grid-row-added td:first-child {
+                background: #f0fdf4;
+            }
+            .hss-grid-row-changed td:first-child {
+                background: #fff7ed;
+            }
+            .hss-change-badge {
+                display: inline-block;
+                padding: 0.1rem 0.5rem;
+                border-radius: 999px;
+                font-size: 12px;
+                line-height: 1.4;
+                align-self: flex-start;
+            }
+            .hss-change-badge-changed {
+                background: #fde68a;
+                color: #92400e;
+            }
+            .hss-change-badge-added {
+                background: #bbf7d0;
+                color: #166534;
             }
             """
         ),
@@ -197,11 +232,12 @@ def build_grid_panel():
                         const strokeColor = node.dataset.color || '#1c42d7';
                         const strokeOpacity = node.dataset.opacity ? parseFloat(node.dataset.opacity) : 0.9;
                         const dash = node.dataset.dash || null;
+                        const weight = node.dataset.weight ? parseFloat(node.dataset.weight) : 2;
                         console.log('HSS grid minimap style', { color: strokeColor, opacity: strokeOpacity, dash: dash });
                         const coordsKey = JSON.stringify(coords);
                         if (node.dataset.hssInit) {
                             if (node._hssPolyline) {
-                                node._hssPolyline.setStyle({ color: strokeColor, opacity: strokeOpacity, dashArray: dash, weight: 2 });
+                                node._hssPolyline.setStyle({ color: strokeColor, opacity: strokeOpacity, dashArray: dash, weight: weight });
                                 console.log('HSS grid minimap updated');
                             }
                             if (node._hssCoordsKey !== coordsKey && node._hssPolyline) {
@@ -235,7 +271,7 @@ def build_grid_panel():
                             maxZoom: 19,
                             attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
                         }).addTo(map);
-                        const line = L.polyline(coords, { color: strokeColor, opacity: strokeOpacity, dashArray: dash, weight: 2 }).addTo(map);
+                        const line = L.polyline(coords, { color: strokeColor, opacity: strokeOpacity, dashArray: dash, weight: weight }).addTo(map);
                         node._hssPolyline = line;
                         console.log('HSS grid minimap created');
                         const bounds = L.latLngBounds(coords);
@@ -270,6 +306,9 @@ def build_grid_panel():
                         window.Shiny.setInputValue('grid_goto_click', payload, {priority: 'event'});
                     } else if (action === 'delete') {
                         window.Shiny.setInputValue('grid_delete_click', payload, {priority: 'event'});
+                    } else if (action.startsWith('undo_')) {
+                        payload.action = action;
+                        window.Shiny.setInputValue('changes_undo_click', payload, {priority: 'event'});
                     }
                 });
                 if (window.Shiny && window.Shiny.addCustomMessageHandler) {
@@ -309,6 +348,13 @@ def build_grid_panel():
             });
             """
         ),
+    )
+
+
+def build_grid_panel():
+    return ui.nav_panel(
+        "Grid",
+        grid_assets(),
         ui.tags.div(
             ui.output_ui("grid_pager"),
             ui.output_text("grid_page_info"),
@@ -328,6 +374,7 @@ def render_grid(
     highlight_guids: Optional[Iterable[str]] = None,
     highlight_active: bool = False,
     dim_opacity: float = 0.3,
+    change_status: Optional[dict] = None,
 ) -> ui.Tag:
     start = max(page - 1, 0) * GRID_PAGE_SIZE
     end = start + GRID_PAGE_SIZE
@@ -335,21 +382,32 @@ def render_grid(
     highlight_set: Set[str] = set(highlight_guids or [])
 
     rows_ui = []
+    status_map = change_status or {}
     for _, row in slice_rows.iterrows():
         guid = row.get("guid", "")
         safe_guid_val = safe_guid(guid)
+        status = status_map.get(str(guid))
         coords = row.get("_coords")
         base_color = polyline_color(row, MAP_COLORS)
         dash_array = ONE_WAY_DASH if row.get("OneWay") == "OneWay" else None
         opacity = 0.9
         if highlight_active and guid and guid not in highlight_set:
             opacity = dim_opacity
+        row_class = ""
+        badge = None
+        if status == "created":
+            row_class = "hss-grid-row-added"
+            badge = ui.tags.span("Added", class_="hss-change-badge hss-change-badge-added hss-grid-badge")
+        elif status == "edited":
+            row_class = "hss-grid-row-changed"
+            badge = ui.tags.span("Changed", class_="hss-change-badge hss-change-badge-changed hss-grid-badge")
         rows_ui.append(
             ui.tags.tr(
                 ui.tags.td(
                     ui.tags.div(
                         ui.tags.div(
-                            _route_minimap(coords, base_color, opacity, dash_array, str(guid)),
+                            badge if badge else "",
+                            route_minimap(coords, base_color, opacity, dash_array, str(guid)),
                             ui.tags.button(
                                 "↗",
                                 title="Go to map",
@@ -363,8 +421,27 @@ def render_grid(
                 ),
                 ui.tags.td(
                     ui.tags.div(
-                        ui.input_text(f"grid_name_{safe_guid_val}", "", value=str(row.get("name", ""))),
-                        ui.input_text(f"grid_id_{safe_guid_val}", "", value=str(row.get("id", ""))),
+                        ui.input_text(
+                            f"grid_name_{safe_guid_val}", 
+                            "", 
+                            value=str(row.get("name", "")),
+                            placeholder="Name",
+                            update_on="blur",
+                        ),
+                        ui.input_text(
+                            f"grid_designation_{safe_guid_val}",
+                            "",
+                            value=str(row.get("Designation", "")),
+                            placeholder="Designation",
+                            update_on="blur",
+                        ),
+                        ui.input_text(
+                            f"grid_id_{safe_guid_val}", 
+                            "", 
+                            value=str(row.get("id", "")),
+                            placeholder="Id",
+                            update_on="blur",
+                        ),
                         class_="hss-grid-stack",
                     )
                 ),
@@ -429,6 +506,7 @@ def render_grid(
                         **{"data-guid": str(guid), "data-action": "delete"},
                     )
                 ),
+                class_=row_class,
             )
         )
 
@@ -440,11 +518,35 @@ def render_grid(
             ui.tags.thead(
                 ui.tags.tr(
                     ui.tags.th("Map"),
-                    ui.tags.th("Name / Id"),
-                    ui.tags.th("Direction / Flow"),
-                    ui.tags.th("Protection / Ownership"),
-                    ui.tags.th("Audited / Rejected"),
-                    ui.tags.th("Delete"),
+                    ui.tags.th(
+                        ui.tooltip(
+                            ui.tags.span("Name / Designation / Id"),
+                            f"{TOOLTIP_TEXT['name']} / {TOOLTIP_TEXT['designation']} / {TOOLTIP_TEXT['id']}",
+                            placement="bottom",
+                        )
+                    ),
+                    ui.tags.th(
+                        ui.tooltip(
+                            ui.tags.span("Direction / Flow"),
+                            f"{TOOLTIP_TEXT['oneway']} / {TOOLTIP_TEXT['flow']}",
+                            placement="bottom",
+                        )
+                    ),
+                    ui.tags.th(
+                        ui.tooltip(
+                            ui.tags.span("Protection / Ownership"),
+                            f"{TOOLTIP_TEXT['protection']} / {TOOLTIP_TEXT['ownership']}",
+                            placement="bottom",
+                        )
+                    ),
+                    ui.tags.th(
+                        ui.tooltip(
+                            ui.tags.span("Audited / Rejected"),
+                            f"{TOOLTIP_TEXT['audited_online']} / {TOOLTIP_TEXT['audited_in_person']} / {TOOLTIP_TEXT['rejected']}",
+                            placement="bottom",
+                        )
+                    ),
+                    ui.tags.th(ui.tooltip(ui.tags.span("Delete"), "Remove this route", placement="bottom")),
                 )
             ),
             ui.tags.tbody(*rows_ui),

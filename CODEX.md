@@ -21,6 +21,9 @@
 - Route styling schemes/width are main-map only; minimap styling should remain stable unless explicitly requested.
 - Keep preference persistence lightweight (localStorage + minimal JS), and restore only when inputs exist.
 - CycleRoutes lookup uses a cached spatial index (STRtree) to suggest a designation for new routes; keep it fast and read-only.
+- Preferred wording in UI/docs: use “Added / Removed / Changed” (not Created/Deleted/Edited).
+- Always await or `asyncio.create_task()` any `session.send_custom_message(...)` calls to avoid dropped messages and runtime warnings. Prefer a shared helper when adding new message paths.
+- Suggestions tab is intentionally a placeholder for future QA tooling (naming gaps, TfL mismatches, designation checks).
 
 ## Project Structure
 

@@ -3,6 +3,8 @@ from shiny import ui
 from ui_assets import app_styles, map_bridge_script
 
 from grid_page import build_grid_panel
+from changes_page import build_changes_panel
+from suggestions_page import build_suggestions_panel
 
 
 def build_app_ui():
@@ -48,7 +50,10 @@ def build_app_ui():
             ),
         ),
         build_grid_panel(),
+        build_changes_panel(),
+        build_suggestions_panel(),
         ui.nav_spacer(),
+        ui.nav_control(ui.input_action_button("reports", "Reports", class_="btn btn-outline-secondary btn-sm")),
         ui.nav_control(ui.output_ui("welcome_banner")),
         title="Healthy Streets",
         sidebar=ui.sidebar(
@@ -65,7 +70,7 @@ def build_app_ui():
             ui.output_ui("distance_boxes"),
             ui.input_select(
                 "highlight_mode",
-                "Highlight by",
+                "Focus on",
                 choices=["None", "Created since", "Edited since", "Owned by", "Audited status"],
                 selected="None",
             ),

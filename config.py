@@ -94,3 +94,19 @@ CHOICES = {
     "ownership": {"Unknown": "", "TFL": "TFL", "Borough": "Borough", "Other": "Other"},
     "year_before": {"In": "In", "Before": "Before"},
 }
+
+TOOLTIP_TEXT = {
+    "name": "The name of the street or area this segment is in?",
+    "id": "A unique identifier to help identify this segment - made up of nonsense words - or choose something you like",
+    "comment": "Comments/questions about this segment",
+    "oneway": "Is this segment one way - or two way?",
+    "flow": "Are lanes on one side of the street or both?",
+    "protection": "What type of protection does this facility offer?",
+    "designation": "What is the cycle route's designation, if there is one?",
+    "ownership": "Ownership of the road (ie, is it TLRN)?",
+    "year_before": "Do we know exactly when this facility was built?",
+    "year_built": "Year this facility was built in (or before)",
+    "audited_in_person": "Has this facility been audited in person?",
+    "audited_online": "Has this facility been audited using online maps/streetview?",
+    "rejected": "Had this facility been rejected? If yes, then put details in the comments",
+}

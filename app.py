@@ -18,10 +18,11 @@ from config import (
     ONE_WAY_DASH,
     CHOICES,
     MAP_COLORS,
+    TOOLTIP_TEXT,
     get_route_style,
     logger,
 )
-from data_io import get_access_table_once, get_gspread_client, list_regions, read_region_sheet
+from data_io import get_access_table_once, get_gspread_client, list_regions, read_region_sheet, write_region_sheet
 from data_processing import (
     coords_to_ewkt,
     generate_route_id,
@@ -38,9 +39,10 @@ from map_folium import build_map
 from time_utils import today_string
 from ui_layout import build_app_ui
 from grid_page import GRID_PAGE_SIZE, grid_input_ids, render_grid
+from changes_page import render_changes
 from server_grid import register_grid_actions
 from server_highlight import compute_highlight, register_highlight_handlers
-from change_tracking import compute_change_summary
+from change_tracking import compute_change_summary, compute_row_status
 from server_map import register_map_outputs
 from server_selection import register_selection_handlers
 from server_regions import register_region_handlers
@@ -79,6 +81,11 @@ def server(input, output, session):
     loading_message = reactive.Value("Loading...")
     loading_active = reactive.Value(True)
     loading_modal_visible = reactive.Value(False)
+    region_pref = reactive.Value(None)
+    region_pref_ready = reactive.Value(False)
+    region_pref_timeout_started = reactive.Value(False)
+    region_select_synced = reactive.Value(False)
+    changes_open_state = reactive.Value(["changed", "added", "removed"])
 
     @reactive.effect
     def _show_loading_modal():
@@ -241,14 +248,71 @@ def server(input, output, session):
         return [r for r in sheet_regions if r in allowed]
 
     @reactive.effect
+    @reactive.event(input.region_pref)
+    def _capture_region_pref():
+        try:
+            pref = input.region_pref()
+        except Exception:
+            pref = None
+        region_pref.set(pref)
+        region_pref_ready.set(True)
+        logger.info("Region pref received: %s", pref)
+
+    @reactive.effect
+    def _region_pref_timeout():
+        if region_pref_ready.get() or region_pref_timeout_started.get():
+            return
+        region_pref_timeout_started.set(True)
+        async def _wait():
+            await asyncio.sleep(1.0)
+            if not region_pref_ready.get():
+                region_pref_ready.set(True)
+                logger.info("Region pref timeout: proceeding without client pref")
+        asyncio.create_task(_wait())
+
+    @reactive.effect
     def _sync_region_select():
         values = regions()
         if not values:
             return
-        selected = current_region.get()
+        if not region_pref_ready.get():
+            return
+        current_input = None
+        try:
+            current_input = input.region()
+        except Exception:
+            current_input = None
+        current = current_region.get()
+        if current and current in values and region_select_synced.get():
+            logger.info(
+                "Region select sync skipped: already synced current=%s (values=%s)",
+                current,
+                len(values),
+            )
+            return
+        selected = current if current in values else None
         if not selected:
-            selected = DEFAULT_REGION if DEFAULT_REGION in values else values[0]
+            pref = region_pref.get()
+            if pref and pref in values:
+                selected = pref
+            else:
+                selected = DEFAULT_REGION if DEFAULT_REGION in values else values[0]
+        if current_input and current_input == selected and len(values) > 0:
+            logger.info(
+                "Region select sync skipped: input already %s (values=%s)",
+                current_input,
+                len(values),
+            )
+            region_select_synced.set(True)
+            return
+        logger.info(
+            "Region select sync: values=%s selected=%s current=%s",
+            len(values),
+            selected,
+            current_region.get(),
+        )
         ui.update_select("region", choices=values, selected=selected)
+        region_select_synced.set(True)
 
     register_highlight_handlers(
         input=input,
@@ -341,6 +405,7 @@ def server(input, output, session):
         update_edit_inputs=_update_edit_inputs,
         last_created_guid=last_created_guid,
         last_created_time=last_created_time,
+        session=session,
         logger=logger,
     )
 
@@ -363,11 +428,13 @@ def server(input, output, session):
         ensure_loading_modal=_ensure_loading_modal,
         set_map_state=set_map_state,
         read_region_sheet=read_region_sheet,
+        write_region_sheet=write_region_sheet,
         prepare_routes_df=prepare_routes_df,
         get_gspread_client=get_gspread_client,
         coords_to_ewkt=coords_to_ewkt,
         default_sheet_id=DEFAULT_SHEET_ID,
         logger=logger,
+        region_pref_ready=region_pref_ready,
     )
 
     register_grid_actions(
@@ -413,9 +480,10 @@ def server(input, output, session):
 
     @reactive.effect
     def _apply_grid_edits():
-        df = data_state.get()
-        if df.empty:
+        df_current = data_state.get()
+        if df_current.empty:
             return
+        df = df_current.copy()
         page = input.grid_page() or 1
         try:
             page = int(page)
@@ -423,7 +491,7 @@ def server(input, output, session):
             page = 1
         start = max(page - 1, 0) * GRID_PAGE_SIZE
         end = start + GRID_PAGE_SIZE
-        slice_rows = df.iloc[start:end]
+        slice_rows = df_current.iloc[start:end]
         changed = False
         for _, row in slice_rows.iterrows():
             guid = row.get("guid")
@@ -431,6 +499,7 @@ def server(input, output, session):
                 continue
             ids = grid_input_ids(guid)
             name = _input_value(input, ids["name"])
+            designation = _input_value(input, ids["designation"])
             rid = _input_value(input, ids["id"])
             oneway = _input_value(input, ids["oneway"])
             flow = _input_value(input, ids["flow"])
@@ -443,6 +512,9 @@ def server(input, output, session):
             row_changed = False
             if name is not None and str(row.get("name", "")) != str(name):
                 df.loc[df["guid"] == guid, "name"] = str(name)
+                row_changed = True
+            if designation is not None and str(row.get("Designation", "")) != str(designation):
+                df.loc[df["guid"] == guid, "Designation"] = str(designation)
                 row_changed = True
             if rid is not None and str(row.get("id", "")) != str(rid):
                 df.loc[df["guid"] == guid, "id"] = str(rid)
@@ -492,12 +564,25 @@ def server(input, output, session):
                         },
                     }
                     asyncio.create_task(session.send_custom_message("hss_update_style", style_payload))
+                    with reactive.isolate():
+                        try:
+                            highlight_date = input.highlight_date()
+                        except SilentException:
+                            highlight_date = None
+                        try:
+                            highlight_owner = input.highlight_owner()
+                        except SilentException:
+                            highlight_owner = None
+                        try:
+                            highlight_audit = input.highlight_audit()
+                        except SilentException:
+                            highlight_audit = None
                     grid_guids, dim_opacity, _, _, _, highlight_active = compute_highlight(
                         df=df,
                         mode=input.highlight_mode(),
-                        since_value=input.highlight_date(),
-                        owner_value=input.highlight_owner(),
-                        audit_value=input.highlight_audit(),
+                        since_value=highlight_date,
+                        owner_value=highlight_owner,
+                        audit_value=highlight_audit,
                         dim_percent=highlight_dim_state.get(),
                     )
                     grid_opacity = 0.9
@@ -523,7 +608,7 @@ def server(input, output, session):
 
         if changed:
             data_state.set(df)
-            changes_made.set(True)
+            _sync_changes_flag(df)
             logger.info("Grid edits applied: sending hss_refresh_minimaps")
             asyncio.create_task(session.send_custom_message("hss_refresh_minimaps", {"changed": True}))
 
@@ -554,25 +639,85 @@ def server(input, output, session):
             return ui.p("Click a route on the map to edit.")
         logger.info("Render edit_panel for guid=%s", guid)
         row = df.loc[df["guid"] == guid].iloc[0]
+
+        def _label(text: str, key: str):
+            tooltip = TOOLTIP_TEXT.get(key, "")
+            if not tooltip:
+                return text
+            return ui.tooltip(ui.tags.span(text), tooltip, placement="right")
+
         return ui.TagList(
-            ui.input_text("edit_name", "Name", value=str(row.get("name", ""))),
-            ui.input_text("edit_designation", "Designation", value=str(row.get("Designation", ""))),
-            ui.input_text("edit_id", "Id", value=str(row.get("id", ""))),
+            ui.input_text(
+                "edit_name",
+                _label("Name", "name"),
+                value=str(row.get("name", "")),
+                update_on="blur",
+            ),
+            ui.input_text(
+                "edit_designation",
+                _label("Designation", "designation"),
+                value=str(row.get("Designation", "")),
+                update_on="blur",
+            ),
+            ui.input_text(
+                "edit_id",
+                _label("Id", "id"),
+                value=str(row.get("id", "")),
+                update_on="blur",
+            ),
             ui.input_text_area(
                 "edit_description",
-                "Comments",
+                _label("Comments", "comment"),
                 value=normalize_linebreaks(row.get("description", "")),
                 rows=5,
             ),
-            ui.input_select("edit_oneway", "Direction", choices=list(CHOICES["direction"].values()), selected=row.get("OneWay", "TwoWay")),
-            ui.input_select("edit_flow", "Flow", choices=list(CHOICES["flow"].values()), selected=row.get("Flow", "")),
-            ui.input_select("edit_protection", "Protection", choices=list(CHOICES["protection"].values()), selected=row.get("Protection", "")),
-            ui.input_select("edit_ownership", "Ownership", choices=list(CHOICES["ownership"].values()), selected=row.get("Ownership", "")),
-            ui.input_select("edit_year_before", "Built", choices=list(CHOICES["year_before"].values()), selected="Before" if row.get("YearBuildBeforeFlag", False) else "In"),
-            ui.input_text("edit_year_built", "Year", value=str(row.get("YearBuilt", ""))),
-            ui.input_checkbox("edit_audited_sv", "Audited Streetview", value=bool(row.get("AuditedStreetView", False))),
-            ui.input_checkbox("edit_audited_in_person", "Audited In Person", value=bool(row.get("AuditedInPerson", False))),
-            ui.input_checkbox("edit_rejected", "Rejected", value=bool(row.get("Rejected", False))),
+            ui.input_select(
+                "edit_oneway",
+                _label("Direction", "oneway"),
+                choices=list(CHOICES["direction"].values()),
+                selected=row.get("OneWay", "TwoWay"),
+            ),
+            ui.input_select(
+                "edit_flow",
+                _label("Flow", "flow"),
+                choices=list(CHOICES["flow"].values()),
+                selected=row.get("Flow", ""),
+            ),
+            ui.input_select(
+                "edit_protection",
+                _label("Protection", "protection"),
+                choices=list(CHOICES["protection"].values()),
+                selected=row.get("Protection", ""),
+            ),
+            ui.input_select(
+                "edit_ownership",
+                _label("Ownership", "ownership"),
+                choices=list(CHOICES["ownership"].values()),
+                selected=row.get("Ownership", ""),
+            ),
+            ui.input_select(
+                "edit_year_before",
+                _label("Built", "year_before"),
+                choices=list(CHOICES["year_before"].values()),
+                selected="Before" if row.get("YearBuildBeforeFlag", False) else "In",
+            ),
+            ui.input_text(
+                "edit_year_built",
+                _label("Year", "year_built"),
+                value=str(row.get("YearBuilt", "")),
+                update_on="blur",
+            ),
+            ui.input_checkbox(
+                "edit_audited_sv",
+                _label("Audited Streetview", "audited_online"),
+                value=bool(row.get("AuditedStreetView", False)),
+            ),
+            ui.input_checkbox(
+                "edit_audited_in_person",
+                _label("Audited In Person", "audited_in_person"),
+                value=bool(row.get("AuditedInPerson", False)),
+            ),
+            ui.input_checkbox("edit_rejected", _label("Rejected", "rejected"), value=bool(row.get("Rejected", False))),
             ui.input_action_button("delete_route", "Delete selected route", class_="btn-danger"),
         )
 
@@ -719,9 +864,14 @@ def server(input, output, session):
         base = baseline_state.get()
         cur = data_state.get()
         added, removed, changed = compute_change_summary(base, cur)
+        logger.info("Change summary render: added=%s removed=%s changed=%s", added, removed, changed)
         if added == 0 and removed == 0 and changed == 0:
             return ""
         return f"{added} added / {removed} removed / {changed} changed"
+
+    def _sync_changes_flag(df: pd.DataFrame) -> None:
+        added, removed, changed = compute_change_summary(baseline_state.get(), df)
+        changes_made.set((added + removed + changed) > 0)
 
     @output
     @render.text
@@ -796,6 +946,7 @@ def server(input, output, session):
             df = data_state.get()
             if df.empty:
                 return ui.tags.div("No routes loaded yet.")
+            base = baseline_state.get()
             page = input.grid_page() or 1
             with reactive.isolate():
                 try:
@@ -818,10 +969,175 @@ def server(input, output, session):
                 audit_value=highlight_audit,
                 dim_percent=highlight_dim_state.get(),
             )
+            change_status = compute_row_status(base, df)
             logger.info("Render grid_view page=%s mode=%s dim=%s", page, mode, dim_opacity)
-            return render_grid(df, int(page), guids, highlight_active, dim_opacity)
+            return render_grid(df, int(page), guids, highlight_active, dim_opacity, change_status)
         except Exception:
             logger.exception("Grid view failed")
             return ui.tags.div("Grid failed to render")
+
+    @output
+    @render.ui
+    def changes_view():
+        df = data_state.get()
+        baseline = baseline_state.get()
+        logger.info(
+            "Changes view render: rows=%s baseline_rows=%s",
+            len(df.index) if not df.empty else 0,
+            len(baseline.index) if not baseline.empty else 0,
+        )
+        if df.empty and baseline.empty:
+            return ui.tags.div("No changes yet.")
+        current_ids = set(df["guid"].astype(str)) if not df.empty else set()
+        baseline_ids = set(baseline["guid"].astype(str)) if not baseline.empty else set()
+
+        created_rows = []
+        removed_rows = []
+        edited_pairs = []
+
+        created_ids = current_ids - baseline_ids
+        removed_ids = baseline_ids - current_ids
+        shared_ids = current_ids & baseline_ids
+
+        for guid in created_ids:
+            row = df.loc[df["guid"].astype(str) == guid].iloc[0]
+            created_rows.append(row)
+
+        for guid in removed_ids:
+            row = baseline.loc[baseline["guid"].astype(str) == guid].iloc[0]
+            removed_rows.append(row)
+
+        def _cell_equal(a, b) -> bool:
+            try:
+                if pd.isna(a) and pd.isna(b):
+                    return True
+            except Exception:
+                pass
+            if a is None and b is None:
+                return True
+            return a == b
+
+        compare_cols = [
+            c for c in df.columns
+            if c in baseline.columns and c not in {"History", "LastEdited", "WhenCreated"}
+        ]
+
+        def _row_changed(a, b):
+            for key in compare_cols:
+                if not _cell_equal(a.get(key), b.get(key)):
+                    return True
+            return False
+
+        for guid in shared_ids:
+            before_row = baseline.loc[baseline["guid"].astype(str) == guid].iloc[0]
+            after_row = df.loc[df["guid"].astype(str) == guid].iloc[0]
+            if _row_changed(before_row, after_row):
+                edited_pairs.append((before_row, after_row))
+        logger.info(
+            "Changes view counts: created=%s removed=%s edited=%s",
+            len(created_rows),
+            len(removed_rows),
+            len(edited_pairs),
+        )
+
+        with reactive.isolate():
+            try:
+                highlight_date = input.highlight_date()
+            except SilentException:
+                highlight_date = None
+            try:
+                highlight_owner = input.highlight_owner()
+            except SilentException:
+                highlight_owner = None
+            try:
+                highlight_audit = input.highlight_audit()
+            except SilentException:
+                highlight_audit = None
+
+        guids, dim_opacity, _, _, _, highlight_active = compute_highlight(
+            df=df,
+            mode=input.highlight_mode(),
+            since_value=highlight_date,
+            owner_value=highlight_owner,
+            audit_value=highlight_audit,
+            dim_percent=highlight_dim_state.get(),
+        )
+
+        return render_changes(
+            edited=edited_pairs,
+            created=created_rows,
+            removed=removed_rows,
+            highlight_guids=guids,
+            highlight_active=highlight_active,
+            dim_opacity=dim_opacity,
+            route_colors=_current_route_colors(),
+            route_weight=_current_route_weight(),
+            open_panels=changes_open_state.get(),
+        )
+
+    @reactive.effect
+    @reactive.event(input.hss_changes_accordion)
+    def _capture_changes_open_state():
+        try:
+            value = input.hss_changes_accordion()
+        except Exception:
+            value = None
+        if value is None:
+            return
+        if isinstance(value, str):
+            changes_open_state.set([value])
+        else:
+            try:
+                changes_open_state.set(list(value))
+            except Exception:
+                return
+
+    @reactive.effect
+    @reactive.event(input.changes_undo_click)
+    def _undo_change():
+        payload = input.changes_undo_click()
+        if not payload:
+            return
+        guid = payload.get("guid")
+        action = payload.get("action")
+        if not guid or not action:
+            return
+        df = data_state.get().copy()
+        base = baseline_state.get().copy()
+        guid_str = str(guid)
+
+        if action == "undo_create":
+            if guid_str in set(df["guid"].astype(str)):
+                df = df.loc[df["guid"].astype(str) != guid_str].reset_index(drop=True)
+                if selected_guid.get() == guid:
+                    selected_guid.set(None)
+                    selected_snapshot.set(None)
+        elif action == "undo_remove":
+            if guid_str in set(base["guid"].astype(str)) and guid_str not in set(df["guid"].astype(str)):
+                row = base.loc[base["guid"].astype(str) == guid_str].iloc[0]
+                insert_at = len(df)
+                try:
+                    insert_at = int(base.index[base["guid"].astype(str) == guid_str][0])
+                except Exception:
+                    pass
+                upper = df.iloc[:insert_at]
+                lower = df.iloc[insert_at:]
+                df = pd.concat([upper, pd.DataFrame([row]), lower], ignore_index=True)
+        elif action == "undo_edit":
+            if guid_str in set(base["guid"].astype(str)) and guid_str in set(df["guid"].astype(str)):
+                row = base.loc[base["guid"].astype(str) == guid_str].iloc[0]
+                idx = df.index[df["guid"].astype(str) == guid_str][0]
+                for col in df.columns:
+                    if col in row.index:
+                        df.at[idx, col] = row[col]
+                if selected_guid.get() == guid:
+                    selected_snapshot.set(_payload_from_row(row))
+        else:
+            return
+
+        data_state.set(df)
+        set_map_state(df, f"undo_{action}")
+        _sync_changes_flag(df)
+        asyncio.create_task(session.send_custom_message("hss_refresh_minimaps", {"changed": True}))
 
 app = App(app_ui, server)
