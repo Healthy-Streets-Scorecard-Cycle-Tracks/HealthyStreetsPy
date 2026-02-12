@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from datetime import date
 from typing import List
@@ -7,6 +8,14 @@ from typing import List
 import pandas as pd
 from shiny import App, reactive, render, ui
 from shiny.types import SilentException
+
+try:
+    import openpyxl  # noqa: F401
+except Exception as exc:  # pragma: no cover
+    raise RuntimeError(
+        "openpyxl is required for report exports. Install it in the active venv "
+        "with: python -m pip install openpyxl==3.1.5"
+    ) from exc
 
 from config import (
     AUTO_LOGIN_ENABLED,
@@ -40,6 +49,7 @@ from time_utils import today_string
 from ui_layout import build_app_ui
 from grid_page import GRID_PAGE_SIZE, grid_input_ids, render_grid
 from changes_page import render_changes
+from suggestions_page import render_suggestions_view
 from server_grid import register_grid_actions
 from server_highlight import compute_highlight, register_highlight_handlers
 from change_tracking import compute_change_summary, compute_row_status
@@ -47,6 +57,10 @@ from server_map import register_map_outputs
 from server_selection import register_selection_handlers
 from server_regions import register_region_handlers
 from server_geojson import register_geojson_handlers
+from cycle_routes import suggest_cycle_designation
+from tfl_lookup import tfl_near_distance
+from reports import build_report_zip, fetch_all_boroughs, filter_routes
+from async_utils import send_custom
 
 app_ui = build_app_ui()
 
@@ -81,11 +95,16 @@ def server(input, output, session):
     loading_message = reactive.Value("Loading...")
     loading_active = reactive.Value(True)
     loading_modal_visible = reactive.Value(False)
+    suggestions_state = reactive.Value(None)
+    suggestions_accepted = reactive.Value(set())
     region_pref = reactive.Value(None)
     region_pref_ready = reactive.Value(False)
     region_pref_timeout_started = reactive.Value(False)
     region_select_synced = reactive.Value(False)
     changes_open_state = reactive.Value(["changed", "added", "removed"])
+    reports_zip_path = reactive.Value(None)
+    reports_tmp_dir = reactive.Value(None)
+    reports_filename = reactive.Value("healthy-streets-report.zip")
 
     @reactive.effect
     def _show_loading_modal():
@@ -98,7 +117,10 @@ def server(input, output, session):
             if not loading_modal_visible.get():
                 ui.modal_show(
                     ui.modal(
-                        ui.p(loading_message.get()),
+                        ui.tags.div(
+                            ui.output_text("loading_message_text"),
+                            id="hss-loading-message",
+                        ),
                         title="Loading...",
                         easy_close=False,
                         footer=None,
@@ -115,13 +137,21 @@ def server(input, output, session):
             return
         ui.modal_show(
             ui.modal(
-                ui.p(loading_message.get()),
+                ui.tags.div(
+                    ui.output_text("loading_message_text"),
+                    id="hss-loading-message",
+                ),
                 title="Loading...",
                 easy_close=False,
                 footer=None,
             )
         )
         loading_modal_visible.set(True)
+
+    @output
+    @render.text
+    def loading_message_text():
+        return loading_message.get()
 
     def _input_value(input_obj, input_id: str):
         try:
@@ -580,7 +610,7 @@ def server(input, output, session):
                             "Length_m": int(round(line_length_m(updated_row.get("_coords") or []))),
                         },
                     }
-                    asyncio.create_task(session.send_custom_message("hss_update_style", style_payload))
+                    send_custom(session, "hss_update_style", style_payload)
                     with reactive.isolate():
                         try:
                             highlight_date = input.highlight_date()
@@ -605,16 +635,15 @@ def server(input, output, session):
                     grid_opacity = 0.9
                     if highlight_active and guid not in set(grid_guids):
                         grid_opacity = dim_opacity
-                    asyncio.create_task(
-                        session.send_custom_message(
-                            "hss_update_minimap",
-                            {
-                                "guid": guid,
-                                "color": polyline_color(updated_row, MAP_COLORS),
-                                "dash": ONE_WAY_DASH if updated_row.get("OneWay") == "OneWay" else "",
-                                "opacity": grid_opacity,
-                            },
-                        )
+                    send_custom(
+                        session,
+                        "hss_update_minimap",
+                        {
+                            "guid": guid,
+                            "color": polyline_color(updated_row, MAP_COLORS),
+                            "dash": ONE_WAY_DASH if updated_row.get("OneWay") == "OneWay" else "",
+                            "opacity": grid_opacity,
+                        },
                     )
                     logger.info("Grid edit: sent hss_update_minimap guid=%s dash=%s opacity=%s", guid, ONE_WAY_DASH if updated_row.get("OneWay") == "OneWay" else "", grid_opacity)
                 except Exception:
@@ -627,7 +656,7 @@ def server(input, output, session):
             data_state.set(df)
             _sync_changes_flag(df)
             logger.info("Grid edits applied: sending hss_refresh_minimaps")
-            asyncio.create_task(session.send_custom_message("hss_refresh_minimaps", {"changed": True}))
+            send_custom(session, "hss_refresh_minimaps", {"changed": True})
 
     register_map_outputs(
         input=input,
@@ -804,7 +833,7 @@ def server(input, output, session):
                 },
             }
             logger.info("Send style update guid=%s payload=%s", guid, style_payload)
-            asyncio.create_task(session.send_custom_message("hss_update_style", style_payload))
+            send_custom(session, "hss_update_style", style_payload)
         except Exception:
             logger.exception("Failed to send style update for guid=%s", guid)
 
@@ -904,6 +933,21 @@ def server(input, output, session):
         except Exception:
             logger.exception("Grid page info failed")
             return "Grid info failed to render"
+
+    @output
+    @render.download(filename=lambda: reports_filename.get() or "healthy-streets-report.zip")
+    def reports_download():
+        path = reports_zip_path.get()
+        if not path or not os.path.exists(path):
+            logger.warning("Report download requested but zip not found: %s", path)
+            return
+        logger.info("Streaming report zip: %s", path)
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 512)
+                if not chunk:
+                    break
+                yield chunk
 
     @output
     @render.ui
@@ -1092,6 +1136,14 @@ def server(input, output, session):
             open_panels=changes_open_state.get(),
         )
 
+    @output
+    @render.ui
+    def suggestions_view():
+        return render_suggestions_view(
+            suggestions_state.get(),
+            suggestions_accepted.get(),
+        )
+
     @reactive.effect
     @reactive.event(input.hss_changes_accordion)
     def _capture_changes_open_state():
@@ -1108,6 +1160,220 @@ def server(input, output, session):
                 changes_open_state.set(list(value))
             except Exception:
                 return
+
+    @reactive.effect
+    @reactive.event(input.suggestions_run)
+    async def _run_suggestions():
+        if not authenticated.get():
+            ui.notification_show("Please log in before generating suggestions.", type="error")
+            return
+        df = data_state.get().copy()
+        if df.empty:
+            suggestions_state.set([])
+            suggestions_accepted.set(set())
+            return
+
+        suggestions_state.set(None)
+        suggestions_accepted.set(set())
+        loading_message.set("Generating suggestions...")
+        loading_active.set(True)
+        _ensure_loading_modal()
+
+        loop = asyncio.get_running_loop()
+
+        def _send_loading_message(text: str) -> None:
+            loading_message.set(text)
+            send_custom(session, "hss_set_loading_message", {"text": text}, loop=loop)
+
+        def _progress(text: str) -> None:
+            loop.call_soon_threadsafe(lambda: _send_loading_message(text))
+
+        suggestions_by_guid = {}
+        suggestion_counter = 0
+
+        def _add_suggestion(row, *, field: str, value: str, label: str, kind: str):
+            nonlocal suggestion_counter
+            guid = str(row.get("guid"))
+            suggestion_counter += 1
+            entry = suggestions_by_guid.setdefault(guid, {"row": row.to_dict(), "suggestions": []})
+            entry["suggestions"].append(
+                {
+                    "id": f"{guid}:{kind}:{suggestion_counter}",
+                    "field": field,
+                    "value": value,
+                    "label": label,
+                }
+            )
+
+        unnamed = []
+        for _, row in df.iterrows():
+            name = str(row.get("name") or "").strip()
+            coords = row.get("_coords") or []
+            if not name and coords:
+                unnamed.append(row)
+
+        total_unnamed = len(unnamed)
+        for idx, row in enumerate(unnamed, start=1):
+            coords = row.get("_coords") or []
+            if not coords:
+                continue
+            lat, lon = coords[0]
+            _progress(f"Naming unnamed routes ({idx}/{total_unnamed})…")
+            try:
+                suggested = await asyncio.to_thread(reverse_geocode_name, lat, lon)
+            except Exception:
+                suggested = None
+            if suggested:
+                _add_suggestion(
+                    row,
+                    field="name",
+                    value=str(suggested),
+                    label=f'Set name to "{suggested}"',
+                    kind="name",
+                )
+            if idx < total_unnamed:
+                await asyncio.sleep(1.05)
+
+        _progress("Checking TFL mismatches…")
+        for _, row in df.iterrows():
+            coords = row.get("_coords") or []
+            if not coords:
+                continue
+            near, _distance = tfl_near_distance(coords, buffer_m=60.0, max_distance_m=60.0)
+            owner = str(row.get("Ownership") or "").strip()
+            owner_is_tfl = owner.upper() == "TFL"
+            if near and not owner_is_tfl:
+                _add_suggestion(
+                    row,
+                    field="Ownership",
+                    value="TFL",
+                    label="Mark Ownership as TFL",
+                    kind="ownership_tfl",
+                )
+            elif owner_is_tfl and not near:
+                _add_suggestion(
+                    row,
+                    field="Ownership",
+                    value="",
+                    label="Clear Ownership (not near TFL)",
+                    kind="ownership_clear",
+                )
+
+        _progress("Checking designations…")
+        for _, row in df.iterrows():
+            coords = row.get("_coords") or []
+            if not coords:
+                continue
+            designation = str(row.get("Designation") or "").strip()
+            suggested = suggest_cycle_designation(coords)
+            if suggested and not designation:
+                _add_suggestion(
+                    row,
+                    field="Designation",
+                    value=str(suggested),
+                    label=f'Set Designation to "{suggested}"',
+                    kind="designation_set",
+                )
+            elif designation and not suggested:
+                _add_suggestion(
+                    row,
+                    field="Designation",
+                    value="",
+                    label="Clear Designation (no matching cycle route)",
+                    kind="designation_clear",
+                )
+
+        suggestions_list = list(suggestions_by_guid.values())
+        suggestions_state.set(suggestions_list)
+        loading_active.set(False)
+
+    @reactive.effect
+    @reactive.event(input.suggestions_accept)
+    def _apply_suggestion():
+        payload = input.suggestions_accept()
+        if not payload:
+            return
+        suggestion_id = payload.get("id")
+        guid = payload.get("guid")
+        field = payload.get("field")
+        value = payload.get("value")
+        if not suggestion_id or not guid or not field:
+            return
+        accepted = set(suggestions_accepted.get() or set())
+        if suggestion_id in accepted:
+            return
+        df = data_state.get().copy()
+        idx_list = df.index[df["guid"].astype(str) == str(guid)].tolist()
+        if not idx_list:
+            return
+        df.at[idx_list[0], field] = value
+        df = update_history(df, guid, current_user.get())
+        data_state.set(df)
+        _sync_changes_flag(df)
+        changes_made.set(True)
+        accepted.add(suggestion_id)
+        suggestions_accepted.set(accepted)
+
+        try:
+            row = df.loc[df["guid"].astype(str) == str(guid)].iloc[0]
+            style_payload = {
+                "guid": guid,
+                "style": {
+                    "color": polyline_color(row, _current_route_colors()),
+                    "dashArray": ONE_WAY_DASH if row.get("OneWay") == "OneWay" else None,
+                    "weight": _current_route_weight(),
+                },
+                "properties": {
+                    "OneWay": row.get("OneWay"),
+                    "Rejected": bool(row.get("Rejected", False)),
+                    "AuditedStreetView": bool(row.get("AuditedStreetView", False)),
+                    "AuditedInPerson": bool(row.get("AuditedInPerson", False)),
+                    "name": row.get("name", ""),
+                    "Length_m": int(round(line_length_m(row.get("_coords") or []))),
+                },
+            }
+            send_custom(session, "hss_update_style", style_payload)
+            with reactive.isolate():
+                try:
+                    highlight_date = input.highlight_date()
+                except SilentException:
+                    highlight_date = None
+                try:
+                    highlight_owner = input.highlight_owner()
+                except SilentException:
+                    highlight_owner = None
+                try:
+                    highlight_audit = input.highlight_audit()
+                except SilentException:
+                    highlight_audit = None
+            grid_guids, dim_opacity, _, _, _, highlight_active = compute_highlight(
+                df=df,
+                mode=input.highlight_mode(),
+                since_value=highlight_date,
+                owner_value=highlight_owner,
+                audit_value=highlight_audit,
+                dim_percent=highlight_dim_state.get(),
+            )
+            grid_opacity = 0.9
+            if highlight_active and str(guid) not in set(grid_guids):
+                grid_opacity = dim_opacity
+            send_custom(
+                session,
+                "hss_update_minimap",
+                {
+                    "guid": guid,
+                    "color": polyline_color(row, MAP_COLORS),
+                    "dash": ONE_WAY_DASH if row.get("OneWay") == "OneWay" else "",
+                    "opacity": grid_opacity,
+                },
+            )
+        except Exception:
+            logger.exception("Failed to send style update for suggestion guid=%s", guid)
+
+        if selected_guid.get() == guid:
+            snapshot = _payload_from_row(row)
+            selected_snapshot.set(snapshot)
+            _update_edit_inputs(snapshot)
 
     @reactive.effect
     @reactive.event(input.changes_undo_click)
@@ -1155,6 +1421,109 @@ def server(input, output, session):
         data_state.set(df)
         set_map_state(df, f"undo_{action}")
         _sync_changes_flag(df)
-        asyncio.create_task(session.send_custom_message("hss_refresh_minimaps", {"changed": True}))
+        send_custom(session, "hss_refresh_minimaps", {"changed": True})
+
+    @reactive.effect
+    @reactive.event(input.reports_run)
+    async def _run_reports():
+        if not authenticated.get():
+            ui.notification_show("Please log in before generating reports.", type="error")
+            return
+        ui.modal_remove()
+        filter_mode = input.reports_filter() or "All"
+        since_kind = input.reports_since_kind() if filter_mode == "Since date" else None
+        since_date = input.reports_since_date() if filter_mode == "Since date" else None
+
+        loading_message.set("Preparing report...")
+        loading_active.set(True)
+        _ensure_loading_modal()
+
+        loop = asyncio.get_running_loop()
+        rate_notified = {"shown": False}
+        retry_task = {"task": None}
+
+        def _send_loading_message(text: str) -> None:
+            loading_message.set(text)
+            send_custom(session, "hss_set_loading_message", {"text": text}, loop=loop)
+
+        def on_progress(msg: str) -> None:
+            loop.call_soon_threadsafe(lambda: _send_loading_message(msg))
+
+        def on_retry(attempt: int, delay: float, elapsed: float, exc: Exception) -> None:
+            message = f"Rate limited; retrying in {delay:.0f}s..."
+            loop.call_soon_threadsafe(lambda: _send_loading_message(message))
+            if retry_task["task"] is not None:
+                loop.call_soon_threadsafe(retry_task["task"].cancel)
+
+            async def _countdown(seconds: int):
+                for remaining in range(seconds - 1, -1, -1):
+                    await asyncio.sleep(1)
+                    _send_loading_message(f"Rate limited; retrying in {remaining}s...")
+
+            if delay >= 2:
+                def _start_countdown() -> None:
+                    retry_task["task"] = asyncio.create_task(_countdown(int(delay)))
+                loop.call_soon_threadsafe(_start_countdown)
+            if not rate_notified["shown"]:
+                rate_notified["shown"] = True
+                loop.call_soon_threadsafe(
+                    lambda: ui.notification_show(
+                        "Google Sheets is rate limiting requests. Retrying with backoff...",
+                        type="warning",
+                        duration=max(3, int(delay)),
+                    )
+                )
+
+        try:
+            borough_list = regions()
+            if not borough_list:
+                ui.notification_show("No boroughs available for reporting.", type="error")
+                return
+            data_by_borough = await fetch_all_boroughs(
+                boroughs=borough_list,
+                sheet_id=DEFAULT_SHEET_ID,
+                read_region_sheet=read_region_sheet,
+                prepare_routes_df=prepare_routes_df,
+                on_progress=on_progress,
+                on_retry=on_retry,
+            )
+            filtered: dict = {}
+            for borough, df in data_by_borough.items():
+                filtered[borough] = filter_routes(
+                    df,
+                    filter_mode=filter_mode,
+                    since_kind=since_kind,
+                    since_date=since_date,
+                )
+            if filter_mode == "All":
+                filter_label = "All routes"
+                report_suffix = ""
+            elif filter_mode == "TFL only":
+                filter_label = "Ownership=TFL"
+                report_suffix = "_filtered"
+            else:
+                date_str = since_date.isoformat() if since_date else "Unknown date"
+                filter_label = f"{since_kind or 'Since'} {date_str}"
+                report_suffix = "_filtered"
+
+            on_progress("Building report files...")
+            tmp_dir, zip_path = await asyncio.to_thread(
+                build_report_zip,
+                borough_dfs=filtered,
+                filter_label=filter_label,
+                borough_geoms=boroughs_state.get(),
+                report_suffix=report_suffix,
+                source_url=f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}",
+            )
+            reports_tmp_dir.set(tmp_dir)
+            reports_zip_path.set(zip_path)
+            reports_filename.set(os.path.basename(zip_path))
+            ui.notification_show("Report ready to download.", type="message")
+            send_custom(session, "hss_trigger_download", {"id": "reports_download"})
+        except Exception:
+            logger.exception("Report generation failed")
+            ui.notification_show("Report generation failed. Check logs for details.", type="error")
+        finally:
+            loading_active.set(False)
 
 app = App(app_ui, server)

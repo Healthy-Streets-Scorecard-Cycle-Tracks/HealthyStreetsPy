@@ -1,6 +1,7 @@
 import asyncio
 
 from shiny import reactive, ui
+from async_utils import send_custom
 
 
 def register_grid_actions(
@@ -54,4 +55,4 @@ def register_grid_actions(
             return
         selected_guid.set(guid)
         selected_snapshot.set(payload_from_row(rows.iloc[0]))
-        asyncio.create_task(session.send_custom_message("hss_nav_to_map", {"guid": guid, "zoom": True}))
+        send_custom(session, "hss_nav_to_map", {"guid": guid, "zoom": True})

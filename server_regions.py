@@ -1,5 +1,7 @@
 import asyncio
 
+from async_utils import send_custom
+
 from shiny import reactive, ui
 
 
@@ -37,11 +39,15 @@ def register_region_handlers(
         is_auth = authenticated.get()
         disabled = (not is_auth) or (not changes_made.get())
         is_loading = loading_active.get()
-        asyncio.create_task(
-            session.send_custom_message(
-                "hss_set_disabled",
-                {"id": "region_fieldset", "disabled": (not is_auth) or changes_made.get() or is_loading},
-            )
+        send_custom(
+            session,
+            "hss_set_disabled",
+            {"id": "region_fieldset", "disabled": (not is_auth) or changes_made.get() or is_loading},
+        )
+        send_custom(
+            session,
+            "hss_set_disabled",
+            {"id": "reports", "disabled": (not is_auth) or changes_made.get() or is_loading},
         )
         ui.update_action_button("save", disabled=disabled)
         ui.update_action_button("discard", disabled=disabled)
@@ -157,9 +163,25 @@ def register_region_handlers(
     def _show_reports_modal():
         ui.modal_show(
             ui.modal(
-                ui.p(
-                    "TODO - we need to generate reports and geojson here, including TfL reports, "
-                    "change reports and maybe Cycle Route reports too."
+                ui.input_select(
+                    "reports_filter",
+                    "Report type",
+                    choices=["All", "TFL only", "Since date"],
+                    selected="All",
+                ),
+                ui.panel_conditional(
+                    "input.reports_filter == 'Since date'",
+                    ui.input_select(
+                        "reports_since_kind",
+                        "Since type",
+                        choices=["Added since", "Changed since"],
+                        selected="Added since",
+                    ),
+                    ui.input_date("reports_since_date", "Since date", value="2024-01-01"),
+                ),
+                ui.tags.div(
+                    ui.input_action_button("reports_run", "Generate & download", class_="btn-primary"),
+                    class_="hss-reports-actions",
                 ),
                 title="Reports",
                 easy_close=False,

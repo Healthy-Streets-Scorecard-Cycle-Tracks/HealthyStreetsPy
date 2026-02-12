@@ -161,10 +161,59 @@ def _ensure_cache():
     return _CACHE
 
 
+def _tfl_nearest_distance(
+    coords: List[Tuple[float, float]],
+    buffer_m: float,
+) -> Optional[float]:
+    if not coords or LineString is None or Point is None:
+        return None
+    tree, geoms, project, geom_index = _ensure_cache()
+    if tree is None:
+        return None
+    try:
+        proj = [project(lon, lat) for lat, lon in coords]
+        if len(proj) < 2:
+            route = Point(proj[0])
+        else:
+            route = LineString(proj)
+    except Exception:
+        return None
+    if route.is_empty:
+        return None
+
+    buffered = route.buffer(buffer_m)
+    candidates = tree.query(buffered)
+    nearest = None
+    for geom in candidates:
+        if not hasattr(geom, "distance"):
+            try:
+                geom = geoms[int(geom)]
+            except Exception:
+                continue
+        try:
+            distance = route.distance(geom)
+        except Exception:
+            continue
+        if nearest is None or distance < nearest:
+            nearest = distance
+    if nearest is not None:
+        return nearest
+    try:
+        nearest_geom = tree.nearest(route)
+        if not hasattr(nearest_geom, "distance"):
+            nearest_geom = geoms[int(nearest_geom)]
+        nearest = route.distance(nearest_geom)
+        return nearest
+    except Exception:
+        return None
+
+
 def suggest_tfl_ownership(
     coords: List[Tuple[float, float]],
     buffer_m: float = 60.0,
     max_distance_m: float = 50.0,
+    *,
+    log: bool = True,
 ) -> bool:
     if not coords or LineString is None or Point is None:
         return False
@@ -186,7 +235,8 @@ def suggest_tfl_ownership(
 
     buffered = route.buffer(buffer_m)
     candidates = tree.query(buffered)
-    logger.info("TFL lookup candidates=%s buffer_m=%.1f", len(candidates), buffer_m)
+    if log:
+        logger.info("TFL lookup candidates=%s buffer_m=%.1f", len(candidates), buffer_m)
     nearest = None
     for geom in candidates:
         if not hasattr(geom, "distance"):
@@ -202,14 +252,15 @@ def suggest_tfl_ownership(
         if nearest is None or distance < nearest:
             nearest = distance
         if distance <= max_distance_m:
-            logger.info(
-                "TFL lookup matched distance_m=%.1f (<= %.1f) geom_idx=%s",
-                distance,
-                max_distance_m,
-                geom_idx,
-            )
+            if log:
+                logger.info(
+                    "TFL lookup matched distance_m=%.1f (<= %.1f) geom_idx=%s",
+                    distance,
+                    max_distance_m,
+                    geom_idx,
+                )
             return True
-    if nearest is not None:
+    if nearest is not None and log:
         logger.info("TFL lookup nearest distance_m=%.1f (threshold %.1f)", nearest, max_distance_m)
     if nearest is None:
         try:
@@ -218,18 +269,37 @@ def suggest_tfl_ownership(
                 nearest_geom = geoms[int(nearest_geom)]
             geom_idx = geom_index.get(id(nearest_geom))
             nearest = route.distance(nearest_geom)
-            logger.info(
-                "TFL lookup nearest (tree.nearest) distance_m=%.1f (threshold %.1f) geom_idx=%s",
-                nearest,
-                max_distance_m,
-                geom_idx,
-            )
+            if log:
+                logger.info(
+                    "TFL lookup nearest (tree.nearest) distance_m=%.1f (threshold %.1f) geom_idx=%s",
+                    nearest,
+                    max_distance_m,
+                    geom_idx,
+                )
             if nearest <= max_distance_m:
-                logger.info("TFL lookup matched via nearest distance_m=%.1f (<= %.1f)", nearest, max_distance_m)
+                if log:
+                    logger.info(
+                        "TFL lookup matched via nearest distance_m=%.1f (<= %.1f)",
+                        nearest,
+                        max_distance_m,
+                    )
                 return True
         except Exception:
-            logger.exception("TFL lookup nearest failed")
+            if log:
+                logger.exception("TFL lookup nearest failed")
     return False
+
+
+def tfl_near_distance(
+    coords: List[Tuple[float, float]],
+    *,
+    buffer_m: float = 60.0,
+    max_distance_m: float = 60.0,
+) -> Tuple[bool, Optional[float]]:
+    distance = _tfl_nearest_distance(coords, buffer_m=buffer_m)
+    if distance is None:
+        return False, None
+    return distance <= max_distance_m, distance
 
 
 def debug_tfl_bbox(coords: List[Tuple[float, float]]) -> Optional[dict]:

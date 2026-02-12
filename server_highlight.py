@@ -1,4 +1,6 @@
 import asyncio
+
+from async_utils import send_custom
 import json
 from typing import List, Optional, Tuple
 
@@ -132,9 +134,7 @@ def register_highlight_handlers(
         if df.empty:
             payload_key = json.dumps({"guids": [], "active": False})
             if payload_key != last_highlight_payload.get():
-                asyncio.create_task(
-                    session.send_custom_message("hss_set_highlight", {"guids": [], "active": False})
-                )
+                send_custom(session, "hss_set_highlight", {"guids": [], "active": False})
                 last_highlight_payload.set(payload_key)
             return
         highlight_date = _safe_input(input.highlight_date)
@@ -160,11 +160,10 @@ def register_highlight_handlers(
             len(guids),
             dim_opacity,
         )
-        asyncio.create_task(
-            session.send_custom_message(
-                "hss_set_highlight",
-                {"guids": guids, "dim_opacity": dim_opacity, "active": highlight_active},
-            )
+        send_custom(
+            session,
+            "hss_set_highlight",
+            {"guids": guids, "dim_opacity": dim_opacity, "active": highlight_active},
         )
         last_highlight_payload.set(payload_key)
 
@@ -189,11 +188,10 @@ def register_highlight_handlers(
             dim_percent=highlight_dim_state.get(),
         )
         logger.info("Reapply highlight after map render mode=%s matches=%d dim=%s", mode, len(guids), dim_opacity)
-        asyncio.create_task(
-            session.send_custom_message(
-                "hss_set_highlight",
-                {"guids": guids, "dim_opacity": dim_opacity, "active": highlight_active},
-            )
+        send_custom(
+            session,
+            "hss_set_highlight",
+            {"guids": guids, "dim_opacity": dim_opacity, "active": highlight_active},
         )
 
     @output

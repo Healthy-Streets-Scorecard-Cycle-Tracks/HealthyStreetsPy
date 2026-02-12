@@ -11,3 +11,4 @@ websockets>=13.0,<14
 fastkml==0.12
 lxml==5.3.0
 setuptools<81
+openpyxl==3.1.5

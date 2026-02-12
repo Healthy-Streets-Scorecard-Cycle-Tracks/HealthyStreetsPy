@@ -53,7 +53,15 @@ def build_app_ui():
         build_changes_panel(),
         build_suggestions_panel(),
         ui.nav_spacer(),
-        ui.nav_control(ui.input_action_button("reports", "Reports", class_="btn btn-outline-secondary btn-sm")),
+        ui.nav_control(ui.tags.div(ui.download_button("reports_download", "Download"), class_="hss-hidden-download")),
+        ui.nav_control(
+            ui.input_action_button(
+                "reports",
+                "Reports",
+                class_="btn btn-outline-secondary btn-sm",
+                title="Reports are disabled while there are unsaved changes.",
+            )
+        ),
         ui.nav_control(ui.output_ui("welcome_banner")),
         title="Healthy Streets",
         sidebar=ui.sidebar(

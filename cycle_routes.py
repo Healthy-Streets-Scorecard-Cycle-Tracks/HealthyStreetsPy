@@ -124,6 +124,33 @@ def _ensure_cache():
     return _CACHE
 
 
+def get_cycle_route_index(programmes: Optional[Iterable[str]] = None):
+    if LineString is None or STRtree is None:
+        return None, [], {}, None
+    tree, features, _, _, project = _ensure_cache()
+    if tree is None:
+        return None, [], {}, None
+    programme_set = {p.strip() for p in (programmes or [])}
+    filtered = []
+    for feature in features:
+        if programme_set and feature.programme not in programme_set:
+            continue
+        if not feature.label:
+            continue
+        filtered.append(feature)
+    geoms = [f.geom for f in filtered]
+    if not geoms:
+        return None, [], {}, project
+    filtered_tree = STRtree(geoms)
+    geom_to_feature = {id(f.geom): f for f in filtered}
+    logger.info(
+        "Cycle route index: programmes=%s features=%s",
+        list(programme_set) if programme_set else "all",
+        len(filtered),
+    )
+    return filtered_tree, geoms, geom_to_feature, project
+
+
 def suggest_cycle_designation(
     coords: List[Tuple[float, float]],
     buffer_m: float = 25.0,

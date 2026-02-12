@@ -1,6 +1,8 @@
 import time
 import asyncio
 
+from async_utils import send_custom
+
 from shiny import reactive
 
 
@@ -62,7 +64,7 @@ def register_selection_handlers(
         selected_guid.set(None)
         selected_snapshot.set(None)
         try:
-            asyncio.create_task(session.send_custom_message("hss_clear_selection", {}))
+            send_custom(session, "hss_clear_selection", {})
             logger.info("Map background click: sent hss_clear_selection")
         except Exception:
             logger.exception("Failed to send clear selection message")

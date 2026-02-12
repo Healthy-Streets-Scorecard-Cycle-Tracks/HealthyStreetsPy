@@ -181,6 +181,20 @@ def map_bridge_script() -> ui.Tag:
                 if (!el) return;
                 el.disabled = !!payload.disabled;
             });
+            window.Shiny.addCustomMessageHandler('hss_trigger_download', function(payload) {
+                const id = (payload && payload.id) ? payload.id : 'reports_download';
+                const btn = document.getElementById(id);
+                if (btn) {
+                    btn.click();
+                }
+            });
+            window.Shiny.addCustomMessageHandler('hss_set_loading_message', function(payload) {
+                const text = payload && payload.text ? payload.text : '';
+                const node = document.getElementById('hss-loading-message');
+                if (node) {
+                    node.innerText = text;
+                }
+            });
         }
 
         function hssHookIframeLoad() {
@@ -406,6 +420,20 @@ def app_styles() -> ui.Tag:
         }
         .hss-map-style-controls output {
             display: none;
+        }
+        .hss-reports-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            margin-top: 0.5rem;
+        }
+        .hss-hidden-download {
+            position: absolute !important;
+            left: -9999px !important;
+            top: -9999px !important;
+            width: 1px !important;
+            height: 1px !important;
+            overflow: hidden !important;
         }
         .sidebar .shiny-input-container,
         .card .shiny-input-container {

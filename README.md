@@ -11,6 +11,7 @@ HealthyStreetsShinyPy is a Shiny for Python app for editing London cycle-route s
 - Highlighting and dimming filters (created/edited since, ownership, audited status)
 - Grid view for bulk edits with minimaps, Go‑to‑map, and delete actions
 - Changes view with before/after minimaps, field diffs, and undo actions
+- Reports export (GeoJSON per borough + Excel summary) with filters for All, TFL only, or Added/Changed since a date
 - CycleRoutes and TfL reference layers and auto‑suggestions for designation/ownership
 - Local UI preferences (basemap, highlighting, route style/width, last borough)
 
@@ -71,6 +72,12 @@ Edits are written back by replacing the entire worksheet, matching the behavior 
 - When creating a new route, the app checks TFL reference layers; if the route is close to a TFL asset it auto-sets `Ownership` to `TFL`.
 - TfL polygon handling avoids Shapely's `MultiPolygon` constructor on Python 3.14 (it errors with Shapely 2.0.4); polygons are built ring-by-ring instead. The lookup logs the matched geometry index for debugging.
 - pyproj is pinned to **3.4.1** to match environments with **PROJ 8.2.1**.
+- Reports export downloads all borough sheets, removes rejected routes, applies the selected report filter, and writes a zip with `geojson/` and `report.xlsx`.
+- Report GeoJSON uses a four‑color, high‑contrast palette and assigns colors so neighboring boroughs do not share a color.
+- Filtered reports append `_filtered` to the zip name and internal files to avoid confusion with full reports.
+- Reports include a TFL mismatches tab to flag routes near TFL geometry but not marked TFL, and routes marked TFL but not near TFL (60m threshold).
+- Reports include Cycleways coverage tabs (designation-based and auto-detected) for Cycleways and Cycle Superhighways; coverage is computed as `(one_way + 2 * two_way) / (2 * cycleway_len)`.
+- Suggestions tab can scan the current borough for unnamed routes (Nominatim, 1 req/sec), TFL ownership mismatches, and designation candidates/mismatches; suggestions can be accepted to update data.
 
 ### CycleRoutes Debug Harness
 

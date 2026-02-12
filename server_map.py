@@ -2,6 +2,7 @@ import os
 import asyncio
 
 from shiny import reactive, render, ui
+from async_utils import send_custom
 from shiny.types import SilentException
 from config import get_route_style
 
@@ -82,14 +83,13 @@ def register_map_outputs(
             weight = 3
         weight = max(1, min(weight, 12))
         logger.info("Send route style update scheme=%s weight=%s", scheme_name, weight)
-        asyncio.create_task(
-            session.send_custom_message(
-                "hss_set_route_style",
-                {
-                    "colors": colors,
-                    "weight": weight,
-                },
-            )
+        send_custom(
+            session,
+            "hss_set_route_style",
+            {
+                "colors": colors,
+                "weight": weight,
+            },
         )
 
     @output

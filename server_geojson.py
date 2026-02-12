@@ -7,6 +7,7 @@ from shiny import reactive, ui
 from uuid import uuid4
 from cycle_routes import debug_cycle_probe, debug_cycle_suggestions, nearest_cycle_label, suggest_cycle_designation
 from tfl_lookup import debug_tfl_probe, suggest_tfl_ownership
+from async_utils import send_custom
 
 
 def register_geojson_handlers(
@@ -84,22 +85,21 @@ def register_geojson_handlers(
             if clipped:
                 ui.notification_show("Route was clipped to the borough boundary.", type="warning")
             row = df.loc[df["guid"] == guid].iloc[0]
-            asyncio.create_task(
-                session.send_custom_message(
-                    "hss_replace_geometry",
-                    {
-                        "guid": guid,
-                        "coords": clipped_coords,
-                        "properties": {
-                            "Length_m": int(round(line_length_m(clipped_coords))) if clipped_coords else 0,
-                        },
-                        "style": {
-                            "color": polyline_color(row, route_colors()),
-                            "dashArray": one_way_dash if row.get("OneWay") == "OneWay" else None,
-                            "weight": route_weight(),
-                        },
+            send_custom(
+                session,
+                "hss_replace_geometry",
+                {
+                    "guid": guid,
+                    "coords": clipped_coords,
+                    "properties": {
+                        "Length_m": int(round(line_length_m(clipped_coords))) if clipped_coords else 0,
                     },
-                )
+                    "style": {
+                        "color": polyline_color(row, route_colors()),
+                        "dashArray": one_way_dash if row.get("OneWay") == "OneWay" else None,
+                        "weight": route_weight(),
+                    },
+                },
             )
             logger.info("Sent hss_replace_geometry guid=%s coords=%d", guid, len(clipped_coords))
         logger.info("Edit geojson applied: updated %d feature(s)", len(features))
@@ -149,7 +149,7 @@ def register_geojson_handlers(
         if not clipped_coords:
             ui.notification_show("New routes must intersect the borough boundary; nothing was added.", type="warning")
             if temp_id:
-                asyncio.create_task(session.send_custom_message("hss_discard_created", {"temp_id": temp_id}))
+                send_custom(session, "hss_discard_created", {"temp_id": temp_id})
                 logger.info("Sent hss_discard_created temp_id=%s", temp_id)
             return
         default_name = "New Route"
@@ -214,29 +214,28 @@ def register_geojson_handlers(
             ui.notification_show("New route was clipped to the borough boundary.", type="warning")
         if temp_id:
             row = df.loc[df["guid"] == new_guid].iloc[0]
-            asyncio.create_task(
-                session.send_custom_message(
-                    "hss_created_update",
-                    {
-                        "temp_id": temp_id,
-                        "guid": new_guid,
-                        "coords": clipped_coords,
-                        "properties": {
-                            "OneWay": row.get("OneWay"),
-                            "Rejected": bool(row.get("Rejected", False)),
-                            "AuditedStreetView": bool(row.get("AuditedStreetView", False)),
-                            "AuditedInPerson": bool(row.get("AuditedInPerson", False)),
-                            "name": row.get("name", ""),
-                            "Length_m": int(round(line_length_m(clipped_coords))) if clipped_coords else 0,
-                        },
-                        "style": {
-                            "color": polyline_color(row, route_colors()),
-                            "dashArray": one_way_dash if row.get("OneWay") == "OneWay" else None,
-                            "weight": route_weight(),
-                        },
+            send_custom(
+                session,
+                "hss_created_update",
+                {
+                    "temp_id": temp_id,
+                    "guid": new_guid,
+                    "coords": clipped_coords,
+                    "properties": {
+                        "OneWay": row.get("OneWay"),
+                        "Rejected": bool(row.get("Rejected", False)),
+                        "AuditedStreetView": bool(row.get("AuditedStreetView", False)),
+                        "AuditedInPerson": bool(row.get("AuditedInPerson", False)),
+                        "name": row.get("name", ""),
+                        "Length_m": int(round(line_length_m(clipped_coords))) if clipped_coords else 0,
                     },
-                )
+                    "style": {
+                        "color": polyline_color(row, route_colors()),
+                        "dashArray": one_way_dash if row.get("OneWay") == "OneWay" else None,
+                        "weight": route_weight(),
+                    },
+                },
             )
             logger.info("Sent hss_created_update temp_id=%s guid=%s coords=%d", temp_id, new_guid, len(clipped_coords))
-            asyncio.create_task(session.send_custom_message("hss_select_route", {"guid": new_guid}))
+            send_custom(session, "hss_select_route", {"guid": new_guid})
         last_created_payload.set(payload_key)

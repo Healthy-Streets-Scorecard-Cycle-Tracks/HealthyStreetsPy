@@ -23,6 +23,8 @@
 - CycleRoutes lookup uses a cached spatial index (STRtree) to suggest a designation for new routes; keep it fast and read-only.
 - Preferred wording in UI/docs: use “Added / Removed / Changed” (not Created/Deleted/Edited).
 - Always await or `asyncio.create_task()` any `session.send_custom_message(...)` calls to avoid dropped messages and runtime warnings. Prefer a shared helper when adding new message paths.
+- Any callbacks invoked from worker threads (e.g., retry hooks inside `asyncio.to_thread`) must schedule UI updates or new tasks using `loop.call_soon_threadsafe(...)` to avoid “no running event loop” errors.
+- Do not wrap `send_custom(...)` in `asyncio.create_task(...)` since it already handles scheduling; wrapping it can raise “coroutine expected” errors.
 - Suggestions tab is intentionally a placeholder for future QA tooling (naming gaps, TfL mismatches, designation checks).
 - Deployment target uses PROJ 8.2.1; keep pyproj pinned to 3.4.x and Python at 3.11.
 
@@ -41,4 +43,5 @@
 - Keep geojson edit/create handlers in `server_geojson.py`.
 - Keep map rendering in `server_map.py`.
 - Keep selection + edit sync in `server_selection.py`.
+- Keep report generation in `reports.py` and helpers (geojson/excel/coloring) in `report_utils.py`.
 - Add other modules to keep logic together - but always update this file (and the README) when you do.
